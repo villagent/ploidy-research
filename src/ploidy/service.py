@@ -21,6 +21,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from ploidy.context_firewall import ContextManifest, build_context_manifest
 from ploidy.convergence import ConvergenceEngine
 from ploidy.exceptions import PloidyError, ProtocolError, SessionError
 from ploidy.injection import (
@@ -260,6 +261,19 @@ class DebateService:
                 f"configured ceiling of {self.max_context_tokens}. "
                 "Trim the documents or raise PLOIDY_MAX_CONTEXT_TOKENS."
             )
+
+    def _build_context_manifest(
+        self,
+        docs: list[str],
+        context_sources: list[str] | None,
+        blocked_sources: list[str] | None,
+    ) -> ContextManifest:
+        """Return provenance evidence for loaded context after policy checks."""
+        return build_context_manifest(
+            docs,
+            context_sources=context_sources,
+            blocked_sources=blocked_sources,
+        )
 
     def _cleanup_debate(self, debate_id: str) -> None:
         self.protocols.pop(debate_id, None)
@@ -515,6 +529,8 @@ class DebateService:
         prompt: str,
         context_documents: list[str] | None = None,
         *,
+        context_sources: list[str] | None = None,
+        blocked_sources: list[str] | None = None,
         tenant: str | None = None,
         owner_id: str | None = None,
     ) -> dict[str, Any]:
@@ -529,9 +545,11 @@ class DebateService:
         for i, doc in enumerate(docs):
             self._validate_length(doc, self.max_content_len, f"context_documents[{i}]")
         self._enforce_context_budget(docs)
+        manifest = self._build_context_manifest(docs, context_sources, blocked_sources)
 
         debate_id = uuid.uuid4().hex[:12]
-        await self.store.save_debate(debate_id, prompt, owner_id=owner_id)
+        config = {"context_manifest": manifest.as_dict()}
+        await self.store.save_debate(debate_id, prompt, config=config, owner_id=owner_id)
 
         deep_id = f"{debate_id}-deep-{uuid.uuid4().hex[:6]}"
         deep_ctx = SessionContext(
@@ -568,6 +586,7 @@ class DebateService:
             "role": "deep",
             "phase": protocol.phase.value,
             "prompt": prompt,
+            "context_manifest": manifest.as_dict(),
             "message": f"Debate created. Share this debate_id with the Fresh session: {debate_id}",
         }
 
@@ -931,6 +950,8 @@ class DebateService:
         deep_challenge: str | None = None,
         fresh_challenge: str | None = None,
         context_documents: list[str] | None = None,
+        context_sources: list[str] | None = None,
+        blocked_sources: list[str] | None = None,
         deep_label: str = "Deep",
         fresh_label: str = "Fresh",
         *,
@@ -955,9 +976,15 @@ class DebateService:
         for i, doc in enumerate(docs):
             self._validate_length(doc, self.max_content_len, f"context_documents[{i}]")
         self._enforce_context_budget(docs)
+        manifest = self._build_context_manifest(docs, context_sources, blocked_sources)
 
         debate_id = uuid.uuid4().hex[:12]
-        config = {"mode": "solo", "deep_label": deep_label, "fresh_label": fresh_label}
+        config = {
+            "mode": "solo",
+            "deep_label": deep_label,
+            "fresh_label": fresh_label,
+            "context_manifest": manifest.as_dict(),
+        }
         metrics().debate_started.labels(tenant=tenant_label(owner_id), mode="solo").inc()
 
         try:
@@ -1102,6 +1129,7 @@ class DebateService:
             "phase": "complete",
             "mode": "solo",
             "config": config,
+            "context_manifest": manifest.as_dict(),
             "synthesis": result.synthesis,
             "rendered_markdown": rendered_markdown,
             "confidence": result.confidence,
@@ -1121,6 +1149,8 @@ class DebateService:
         self,
         prompt: str,
         context_documents: list[str] | None = None,
+        context_sources: list[str] | None = None,
+        blocked_sources: list[str] | None = None,
         fresh_role: str = "fresh",
         delivery_mode: str = "none",
         pause_at: str | None = None,
@@ -1139,25 +1169,6 @@ class DebateService:
     ) -> dict[str, Any]:
         tenant = self._resolve_tenant(tenant, owner_id)
         await self._acquire_or_count(tenant, cost=float(deep_n + fresh_n))
-        try:
-            from ploidy.api_client import (
-                compress_failures_only,
-                compress_position,
-                generate_challenge,
-                generate_experienced_position,
-                generate_fresh_position,
-                generate_semi_fresh_position,
-                is_api_available,
-            )
-        except ImportError:
-            raise PloidyError("API client not available. Install with: pip install ploidy[api]")
-
-        if not is_api_available():
-            raise PloidyError(
-                "API not configured. Set PLOIDY_API_BASE_URL (or provide "
-                "ANTHROPIC_API_KEY to auto-configure the Anthropic endpoint)."
-            )
-
         # ── Validate inputs ─────────────────────────────────────────────
         self._validate_length(prompt, self.max_prompt_len, "prompt")
         docs = context_documents or []
@@ -1168,6 +1179,7 @@ class DebateService:
         for i, doc in enumerate(docs):
             self._validate_length(doc, self.max_content_len, f"context_documents[{i}]")
         self._enforce_context_budget(docs)
+        manifest = self._build_context_manifest(docs, context_sources, blocked_sources)
 
         role_map = {"fresh": SessionRole.FRESH, "semi_fresh": SessionRole.SEMI_FRESH}
         auto_role = role_map.get(fresh_role)
@@ -1221,6 +1233,25 @@ class DebateService:
                 f"Invalid language '{language}'. Must be one of {sorted(VALID_LANGUAGES)}"
             )
 
+        try:
+            from ploidy.api_client import (
+                compress_failures_only,
+                compress_position,
+                generate_challenge,
+                generate_experienced_position,
+                generate_fresh_position,
+                generate_semi_fresh_position,
+                is_api_available,
+            )
+        except ImportError:
+            raise PloidyError("API client not available. Install with: pip install ploidy[api]")
+
+        if not is_api_available():
+            raise PloidyError(
+                "API not configured. Set PLOIDY_API_BASE_URL (or provide "
+                "ANTHROPIC_API_KEY to auto-configure the Anthropic endpoint)."
+            )
+
         raw_context = "\n\n".join(docs) if docs else ""
         deep_user_prompt, deep_sys_prompt = build_deep_prompt(
             raw_context, prompt, mode=injection_mode, context_pct=context_pct
@@ -1239,6 +1270,7 @@ class DebateService:
             "fresh_model": fresh_model,
             "fresh_role": fresh_role,
             "delivery_mode": delivery_mode,
+            "context_manifest": manifest.as_dict(),
         }
 
         debate_id = uuid.uuid4().hex[:12]
@@ -1403,6 +1435,7 @@ class DebateService:
                     "paused_before": "challenge",
                     "mode": "auto_hitl",
                     "config": config,
+                    "context_manifest": manifest.as_dict(),
                     "positions": {
                         "deep": [p[:500] for p in deep_positions],
                         "fresh": [p[:500] for p in fresh_positions],
@@ -1509,6 +1542,7 @@ class DebateService:
                     "paused_before": "convergence",
                     "mode": "auto_hitl",
                     "config": config,
+                    "context_manifest": manifest.as_dict(),
                     "challenges": {
                         "deep": deep_challenge[:500],
                         "fresh": fresh_challenge[:500],
@@ -1590,6 +1624,7 @@ class DebateService:
             "phase": "complete",
             "mode": "auto",
             "config": config,
+            "context_manifest": manifest.as_dict(),
             "synthesis": result.synthesis,
             "rendered_markdown": rendered_markdown,
             "confidence": result.confidence,

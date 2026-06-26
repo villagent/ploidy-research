@@ -280,6 +280,8 @@ async def _stream_debate(request):
             result = await svc.run_auto(
                 prompt=body.get("prompt", ""),
                 context_documents=body.get("context_documents"),
+                context_sources=body.get("context_sources"),
+                blocked_sources=body.get("blocked_sources"),
                 fresh_role=body.get("fresh_role", "fresh"),
                 delivery_mode=body.get("delivery_mode", "none"),
                 pause_at=body.get("pause_at"),
@@ -434,6 +436,8 @@ async def debate(
     fresh_model: str | None = None,
     # shared
     context_documents: list[str] | None = None,
+    context_sources: list[str] | None = None,
+    blocked_sources: list[str] | None = None,
 ) -> dict:
     """Run a context-asymmetric debate in a single call.
 
@@ -473,6 +477,9 @@ async def debate(
         language: (auto) Output language code.
         deep_model / fresh_model: (auto) Per-side model overrides.
         context_documents: Optional documents attached to the deep side.
+        context_sources: Optional provenance labels, one per context document.
+        blocked_sources: Optional strings that must not appear in source labels
+            or context documents.
 
     Returns:
         Convergence result dict, or paused state (auto + pause_at).
@@ -495,6 +502,8 @@ async def debate(
             deep_challenge=deep_challenge,
             fresh_challenge=fresh_challenge,
             context_documents=context_documents,
+            context_sources=context_sources,
+            blocked_sources=blocked_sources,
             deep_label=deep_label,
             fresh_label=fresh_label,
             tenant=owner or "global",
@@ -515,6 +524,8 @@ async def debate(
         return await svc.run_auto(
             prompt=prompt,
             context_documents=context_documents,
+            context_sources=context_sources,
+            blocked_sources=blocked_sources,
             fresh_role=fresh_role,
             delivery_mode=delivery_mode,
             pause_at=pause_at,
@@ -538,7 +549,12 @@ async def debate(
 )
 @deprecated(version="0.4", prefer="``debate(prompt, mode=...)``")
 @traced
-async def debate_start(prompt: str, context_documents: list[str] | None = None) -> dict:
+async def debate_start(
+    prompt: str,
+    context_documents: list[str] | None = None,
+    context_sources: list[str] | None = None,
+    blocked_sources: list[str] | None = None,
+) -> dict:
     """Begin a new debate session with a decision prompt.
 
     Creates a debate and a Deep (full-context) session.
@@ -547,7 +563,12 @@ async def debate_start(prompt: str, context_documents: list[str] | None = None) 
     svc = await _init()
     owner = _current_owner()
     return await svc.start_debate(
-        prompt, context_documents, tenant=owner or "global", owner_id=owner
+        prompt,
+        context_documents,
+        context_sources=context_sources,
+        blocked_sources=blocked_sources,
+        tenant=owner or "global",
+        owner_id=owner,
     )
 
 
@@ -660,6 +681,8 @@ async def debate_solo(
     deep_challenge: str | None = None,
     fresh_challenge: str | None = None,
     context_documents: list[str] | None = None,
+    context_sources: list[str] | None = None,
+    blocked_sources: list[str] | None = None,
     deep_label: str = "Deep",
     fresh_label: str = "Fresh",
 ) -> dict:
@@ -677,6 +700,8 @@ async def debate_solo(
         deep_challenge=deep_challenge,
         fresh_challenge=fresh_challenge,
         context_documents=context_documents,
+        context_sources=context_sources,
+        blocked_sources=blocked_sources,
         deep_label=deep_label,
         fresh_label=fresh_label,
         tenant=owner or "global",
@@ -692,6 +717,8 @@ async def debate_solo(
 async def debate_auto(
     prompt: str,
     context_documents: list[str] | None = None,
+    context_sources: list[str] | None = None,
+    blocked_sources: list[str] | None = None,
     fresh_role: str = "fresh",
     delivery_mode: str = "none",
     pause_at: str | None = None,
@@ -715,6 +742,8 @@ async def debate_auto(
     return await svc.run_auto(
         prompt=prompt,
         context_documents=context_documents,
+        context_sources=context_sources,
+        blocked_sources=blocked_sources,
         fresh_role=fresh_role,
         delivery_mode=delivery_mode,
         pause_at=pause_at,
