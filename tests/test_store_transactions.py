@@ -100,7 +100,11 @@ async def test_owner_read_is_immediate_but_other_task_waits_for_rollback(store):
         try:
             async with store.transaction():
                 await store.save_debate("uncommitted", "owner can see this")
-                own_view = await asyncio.wait_for(store.get_debate("uncommitted"), timeout=0.1)
+                # ``wait_for(coroutine)`` creates a child Task on Python 3.11,
+                # which correctly must not inherit transaction ownership. Use
+                # the timeout context so this read stays in the owner Task.
+                async with asyncio.timeout(0.1):
+                    own_view = await store.get_debate("uncommitted")
                 assert own_view is not None
                 owner_ready.set()
                 await allow_rollback.wait()
