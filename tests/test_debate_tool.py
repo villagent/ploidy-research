@@ -89,7 +89,9 @@ async def test_auto_dispatch_invokes_api_client(monkeypatch):
     monkeypatch.setattr(api_client, "generate_fresh_position", fake_fresh)
     monkeypatch.setattr(api_client, "generate_challenge", fake_challenge)
 
-    result = await server.debate(prompt="Auto flow", mode="auto")
+    result = await server.debate(
+        prompt="Auto flow", mode="auto", context_documents=["project context"]
+    )
 
     assert result["mode"] == "auto"
     assert result["phase"] == "complete"
@@ -109,7 +111,12 @@ async def test_auto_pause_at_returns_paused_state(monkeypatch):
     monkeypatch.setattr(api_client, "generate_experienced_position", fake_deep)
     monkeypatch.setattr(api_client, "generate_fresh_position", fake_fresh)
 
-    result = await server.debate(prompt="paused", mode="auto", pause_at="challenge")
+    result = await server.debate(
+        prompt="paused",
+        mode="auto",
+        context_documents=["project context"],
+        pause_at="challenge",
+    )
     assert result["phase"] == "paused"
     assert result["paused_before"] == "challenge"
 

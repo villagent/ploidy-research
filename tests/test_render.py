@@ -256,7 +256,9 @@ class TestRenderedMarkdownOnReturn:
         monkeypatch.setattr(api_client, "generate_fresh_position", fake_fresh)
         monkeypatch.setattr(api_client, "generate_challenge", fake_challenge)
 
-        result = await server.debate(prompt="auto flow", mode="auto")
+        result = await server.debate(
+            prompt="auto flow", mode="auto", context_documents=["project context"]
+        )
         assert "rendered_markdown" in result
         md = result["rendered_markdown"]
         assert "mode: `auto`" in md

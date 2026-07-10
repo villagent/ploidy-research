@@ -80,12 +80,28 @@ async def test_cross_tenant_cannot_join(svc):
         await svc.join_debate(start["debate_id"], owner_id="tenant-b")
 
 
-async def test_unscoped_legacy_debate_visible_to_all(svc):
-    """owner_id=None treats the debate as unscoped for single-tenant compat."""
+async def test_unscoped_legacy_debate_is_local_only(svc):
+    """Authenticated tenants cannot inherit access to legacy unscoped rows."""
     start = await svc.start_debate("legacy debate", owner_id=None)
-    # Any caller including a tenant can look at it.
-    status = await svc.status(start["debate_id"], owner_id="tenant-x")
+    with pytest.raises(Exception, match="not found"):
+        await svc.status(start["debate_id"], owner_id="tenant-x")
+
+    status = await svc.status(start["debate_id"], owner_id=None)
     assert status["prompt"] == "legacy debate"
+
+
+async def test_unscoped_caller_cannot_list_or_delete_tenant_debate(svc):
+    """The legacy local surface cannot become a backdoor into tenant rows."""
+    tenant = await svc.start_debate("tenant private", owner_id="tenant-a")
+    local = await svc.start_debate("local only", owner_id=None)
+
+    local_history = await svc.history(owner_id=None)
+    local_ids = {debate["id"] for debate in local_history["debates"]}
+    assert local["debate_id"] in local_ids
+    assert tenant["debate_id"] not in local_ids
+
+    with pytest.raises(Exception, match="not found"):
+        await svc.delete(tenant["debate_id"], owner_id=None)
 
 
 async def test_owner_recovered_after_restart(tmp_path):
@@ -129,6 +145,28 @@ async def test_server_tool_extracts_owner_from_auth(monkeypatch):
 
     # The service must have recorded the resolved tenant as the owner.
     assert server._service.debate_owners[debate_id] == "tenant-a"
+
+    await server._service.shutdown()
+    server._service = None
+
+
+async def test_server_tool_extracts_oauth_owner_without_static_tokens(monkeypatch):
+    """OAuth-only tool calls persist ``AccessToken.client_id`` as owner_id."""
+    if server._service is not None:
+        await server._service.shutdown()
+    server._service = None
+
+    monkeypatch.setattr(server, "_AUTH_MODE", "oauth")
+    monkeypatch.setattr(server, "_TOKEN_MAP", {})
+
+    class _FakeAccessToken:
+        client_id = "oauth-tenant"
+
+    monkeypatch.setattr(server, "get_access_token", lambda: _FakeAccessToken())
+
+    result = await server.debate_start(prompt="oauth-owned")
+    debate_id = result["debate_id"]
+    assert server._service.debate_owners[debate_id] == "oauth-tenant"
 
     await server._service.shutdown()
     server._service = None

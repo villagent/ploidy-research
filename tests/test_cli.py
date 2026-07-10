@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ploidy import cli
 
 
@@ -215,9 +217,15 @@ class TestStreamDebateAuthAndTransport:
 
 
 class TestArgparseWiring:
-    def test_url_flag_overrides_env(self):
+    def test_context_file_is_required(self):
+        with pytest.raises(SystemExit):
+            cli.main(["hello"])
+
+    def test_url_flag_overrides_env(self, tmp_path):
         # main() calls _stream_debate; we stub it to inspect the endpoint.
         captured: dict = {}
+        context_file = tmp_path / "context.md"
+        context_file.write_text("deep-only project history", encoding="utf-8")
 
         def fake_stream(url, body, token):
             captured["url"] = url
@@ -226,9 +234,21 @@ class TestArgparseWiring:
             return ("## OK", 0)
 
         with patch.object(cli, "_stream_debate", fake_stream):
-            code = cli.main(["--url", "http://custom/", "--deep-n", "2", "hello"])
+            code = cli.main(
+                [
+                    "--url",
+                    "http://custom/",
+                    "--context-file",
+                    str(context_file),
+                    "--deep-n",
+                    "2",
+                    "hello",
+                ]
+            )
 
         assert code == 0
         assert captured["url"] == "http://custom/v1/debate/stream"
         assert captured["body"]["prompt"] == "hello"
         assert captured["body"]["deep_n"] == 2
+        assert captured["body"]["context_documents"] == ["deep-only project history"]
+        assert captured["body"]["context_sources"] == ["file:context.md"]

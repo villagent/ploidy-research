@@ -36,6 +36,7 @@ from mcp.server.auth.provider import (
     RefreshToken,
     RegistrationError,
     TokenError,
+    TokenVerifier,
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -71,8 +72,20 @@ class PloidyOAuthProvider(
 ):
     """Store-backed OAuth 2.0 Authorization Server provider."""
 
-    def __init__(self, store: DebateStore) -> None:
+    def __init__(
+        self,
+        store: DebateStore,
+        fallback_token_verifier: TokenVerifier | None = None,
+    ) -> None:
+        """Create a provider with an optional legacy bearer fallback.
+
+        FastMCP deliberately rejects configuring both an authorization
+        server provider and a separate token verifier. ``both`` mode still
+        needs one verification surface, so the provider itself delegates
+        unknown access tokens to the static-token verifier.
+        """
         self._store = store
+        self._fallback_token_verifier = fallback_token_verifier
 
     async def _ensure_ready(self) -> None:
         """Open the backing DB on first use.
@@ -312,14 +325,16 @@ class PloidyOAuthProvider(
     async def load_access_token(self, token: str) -> AccessToken | None:
         await self._ensure_ready()
         row = await self._store.get_oauth_token(token)
-        if row is None or row["kind"] != "access":
-            return None
-        return AccessToken(
-            token=row["token"],
-            client_id=row["client_id"],
-            scopes=row["scopes"],
-            expires_at=_iso_to_unix(row["expires_at"]) if row["expires_at"] else None,
-        )
+        if row is not None and row["kind"] == "access":
+            return AccessToken(
+                token=row["token"],
+                client_id=row["client_id"],
+                scopes=row["scopes"],
+                expires_at=_iso_to_unix(row["expires_at"]) if row["expires_at"] else None,
+            )
+        if self._fallback_token_verifier is not None:
+            return await self._fallback_token_verifier.verify_token(token)
+        return None
 
     async def revoke_token(
         self,

@@ -7,9 +7,9 @@ from zsh" is a use case Claude Code cannot cover.
 
 Usage::
 
-    ploidy-ask "should we rewrite the ingestion pipeline in Rust?"
-    ploidy-ask --deep-n 2 --fresh-n 2 --effort medium "..."
-    PLOIDY_URL=https://ploidy.example.com ploidy-ask "..."
+    ploidy-ask --context-file architecture.md "should we rewrite in Rust?"
+    ploidy-ask --context-file a.md --context-file b.md --deep-n 2 "..."
+    PLOIDY_URL=https://ploidy.example.com ploidy-ask --context-file context.md "..."
 
 Exits 0 on ``completed``, non-zero on ``error`` or a transport
 failure. Streams progress ticks to stderr and prints the final
@@ -24,6 +24,7 @@ import json
 import os
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 try:
@@ -174,11 +175,43 @@ def main(argv: list[str] | None = None) -> int:
         default="en",
         help="Output language code (en/ko/ja/zh).",
     )
+    parser.add_argument(
+        "--context-file",
+        action="append",
+        required=True,
+        metavar="PATH",
+        help=(
+            "Text file visible only to Deep. Repeat for multiple files; "
+            "use '-' to read one context document from stdin."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    context_documents: list[str] = []
+    context_sources: list[str] = []
+    for filename in args.context_file:
+        if filename == "-":
+            content = sys.stdin.read()
+            source = "stdin"
+        else:
+            path = Path(filename)
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                parser.error(f"cannot read --context-file {filename!r} as UTF-8 text: {exc}")
+            # Source labels are persisted and may be returned by a remote
+            # service; keep local usernames/directories out of that surface.
+            source = f"file:{path.name}"
+        if not content.strip():
+            parser.error(f"--context-file {filename!r} is empty")
+        context_documents.append(content)
+        context_sources.append(source)
 
     endpoint = args.url.rstrip("/") + "/v1/debate/stream"
     body = {
         "prompt": args.prompt,
+        "context_documents": context_documents,
+        "context_sources": context_sources,
         "deep_n": args.deep_n,
         "fresh_n": args.fresh_n,
         "effort": args.effort,

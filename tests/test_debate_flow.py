@@ -101,14 +101,40 @@ async def test_start_and_status():
     assert len(status["sessions"]) == 1
 
 
-async def test_position_before_join_works():
-    """Deep session can submit position before fresh joins."""
+async def test_position_before_join_is_rejected_without_freezing_roster():
+    """A position cannot freeze the roster before a Fresh session joins."""
     start = await server.debate_start(prompt="Test")
     exp_id = start["session_id"]
 
-    pos = await server.debate_position(exp_id, "My position")
-    assert pos["status"] == "recorded"
-    assert pos["all_positions_in"] is False
+    with pytest.raises(Exception, match="At least two sessions"):
+        await server.debate_position(exp_id, "My position")
+
+    join = await server.debate_join(start["debate_id"])
+    assert join["phase"] == "independent"
+
+
+async def test_join_is_rejected_after_position_submission_begins():
+    """The participant roster stays frozen once any position is recorded."""
+    start = await server.debate_start(prompt="Roster freeze")
+    await server.debate_join(start["debate_id"])
+    await server.debate_position(start["session_id"], "Deep position")
+
+    with pytest.raises(Exception, match="participant roster is frozen"):
+        await server.debate_join(start["debate_id"])
+
+
+async def test_each_session_can_submit_only_one_position():
+    """A seat cannot revise its sealed position before the barrier opens."""
+    start = await server.debate_start(prompt="One position per seat")
+    await server.debate_join(start["debate_id"])
+    await server.debate_position(start["session_id"], "first position")
+
+    with pytest.raises(Exception, match="already submitted a position"):
+        await server.debate_position(start["session_id"], "revised position")
+
+    status = await server.debate_status(start["debate_id"])
+    assert status["message_count"] == 1
+    assert status["positions_released"] is False
 
 
 async def test_challenge_in_wrong_phase_fails():
@@ -126,6 +152,24 @@ async def test_converge_in_wrong_phase_fails():
 
     with pytest.raises(Exception, match="Cannot converge"):
         await server.debate_converge(start["debate_id"])
+
+
+async def test_converge_requires_one_challenge_from_every_session():
+    """The challenge barrier cannot complete with a missing or duplicate seat."""
+    start = await server.debate_start(prompt="Challenge barrier")
+    joined = await server.debate_join(start["debate_id"])
+    await server.debate_position(start["session_id"], "deep position")
+    await server.debate_position(joined["session_id"], "fresh position")
+    await server.debate_challenge(start["session_id"], "deep challenge")
+
+    with pytest.raises(Exception, match="every participating session"):
+        await server.debate_converge(start["debate_id"])
+    with pytest.raises(Exception, match="already submitted a challenge"):
+        await server.debate_challenge(start["session_id"], "duplicate deep challenge")
+
+    await server.debate_challenge(joined["session_id"], "fresh challenge")
+    result = await server.debate_converge(start["debate_id"])
+    assert result["phase"] == "complete"
 
 
 async def test_agree_action_increases_confidence():
@@ -411,7 +455,7 @@ async def test_debate_auto_cleans_up_failed_runs(monkeypatch):
     monkeypatch.setattr(api_client, "generate_challenge", fake_challenge)
 
     with pytest.raises(RuntimeError, match="boom"):
-        await server.debate_auto(prompt="Auto prompt")
+        await server.debate_auto(prompt="Auto prompt", context_documents=["project context"])
 
     history = await server.debate_history()
     assert history["debates"] == []

@@ -254,6 +254,22 @@ class TestExperiencedPosition:
         assert "Project context documents" not in user
         assert "Q?" in user
 
+    async def test_injected_system_context_reaches_system_message_only(self, monkeypatch):
+        from ploidy import api_client
+
+        monkeypatch.setattr(api_client, "_API_BASE_URL", "http://fake:1234")
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=_mock_completion("ok"))
+
+        with patch.object(api_client, "_get_client", return_value=mock_client):
+            await api_client.generate_experienced_position(
+                "Q?",
+                system_prompt="SYSTEM_CONTEXT_SENTINEL",
+            )
+
+        assert "SYSTEM_CONTEXT_SENTINEL" in _system_content(mock_client)
+        assert "SYSTEM_CONTEXT_SENTINEL" not in _user_content(mock_client)
+
 
 class TestSemiFreshPosition:
     async def test_passive_puts_summary_before_question(self, monkeypatch):

@@ -50,7 +50,11 @@ def _fake_api(monkeypatch):
 
 async def test_pause_at_challenge_persists_context(_fake_api):
     """pause_at='challenge' stops after positions and persists paused state."""
-    result = await server.debate_auto(prompt="Should we rewrite in Rust?", pause_at="challenge")
+    result = await server.debate_auto(
+        prompt="Should we rewrite in Rust?",
+        context_documents=["project context"],
+        pause_at="challenge",
+    )
 
     assert result["phase"] == "paused"
     assert result["paused_before"] == "challenge"
@@ -67,7 +71,9 @@ async def test_pause_at_challenge_persists_context(_fake_api):
 
 async def test_approve_resumes_and_completes(_fake_api):
     """approve runs the challenge + convergence phases to completion."""
-    paused = await server.debate_auto(prompt="Approve flow", pause_at="challenge")
+    paused = await server.debate_auto(
+        prompt="Approve flow", context_documents=["project context"], pause_at="challenge"
+    )
     debate_id = paused["debate_id"]
 
     result = await server.debate_review(debate_id, action="approve")
@@ -83,7 +89,9 @@ async def test_approve_resumes_and_completes(_fake_api):
 
 async def test_override_at_challenge_replaces_fresh_position(_fake_api):
     """override replaces the fresh position before challenges run."""
-    paused = await server.debate_auto(prompt="Override flow", pause_at="challenge")
+    paused = await server.debate_auto(
+        prompt="Override flow", context_documents=["project context"], pause_at="challenge"
+    )
     debate_id = paused["debate_id"]
 
     result = await server.debate_review(
@@ -101,7 +109,9 @@ async def test_override_at_challenge_replaces_fresh_position(_fake_api):
 
 
 async def test_override_requires_content(_fake_api):
-    paused = await server.debate_auto(prompt="Missing content", pause_at="challenge")
+    paused = await server.debate_auto(
+        prompt="Missing content", context_documents=["project context"], pause_at="challenge"
+    )
     debate_id = paused["debate_id"]
 
     with pytest.raises(Exception, match="override_content is required"):
@@ -109,7 +119,9 @@ async def test_override_requires_content(_fake_api):
 
 
 async def test_reject_cancels_debate(_fake_api):
-    paused = await server.debate_auto(prompt="Reject flow", pause_at="challenge")
+    paused = await server.debate_auto(
+        prompt="Reject flow", context_documents=["project context"], pause_at="challenge"
+    )
     debate_id = paused["debate_id"]
 
     result = await server.debate_review(debate_id, action="reject")
@@ -125,14 +137,20 @@ async def test_review_unknown_debate_raises(_fake_api):
 
 
 async def test_review_rejects_invalid_action(_fake_api):
-    paused = await server.debate_auto(prompt="Bad action", pause_at="challenge")
+    paused = await server.debate_auto(
+        prompt="Bad action", context_documents=["project context"], pause_at="challenge"
+    )
     with pytest.raises(Exception, match="Invalid action"):
         await server.debate_review(paused["debate_id"], action="maybe")
 
 
 async def test_pause_at_convergence_then_approve(_fake_api):
     """pause_at='convergence' captures challenges; approve should converge."""
-    paused = await server.debate_auto(prompt="Pause before convergence", pause_at="convergence")
+    paused = await server.debate_auto(
+        prompt="Pause before convergence",
+        context_documents=["project context"],
+        pause_at="convergence",
+    )
     debate_id = paused["debate_id"]
     assert paused["paused_before"] == "convergence"
     assert "challenges" in paused
@@ -144,7 +162,11 @@ async def test_pause_at_convergence_then_approve(_fake_api):
 
 async def test_paused_state_recovers_after_shutdown(_fake_api):
     """A paused debate survives a service restart and stays reviewable."""
-    paused = await server.debate_auto(prompt="Recover after restart", pause_at="challenge")
+    paused = await server.debate_auto(
+        prompt="Recover after restart",
+        context_documents=["project context"],
+        pause_at="challenge",
+    )
     debate_id = paused["debate_id"]
 
     await server.shutdown()

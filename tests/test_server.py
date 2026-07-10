@@ -133,6 +133,16 @@ class TestCurrentOwner:
         monkeypatch.setattr(srv, "get_access_token", lambda: fake_token)
         assert srv._current_owner() == "tenant-7"
 
+    def test_oauth_access_token_client_id_is_returned_without_static_map(self, monkeypatch):
+        from ploidy import server as srv
+
+        monkeypatch.setattr(srv, "_AUTH_MODE", "oauth")
+        monkeypatch.setattr(srv, "_TOKEN_MAP", {})
+        fake_token = MagicMock()
+        fake_token.client_id = "oauth-client-7"
+        monkeypatch.setattr(srv, "get_access_token", lambda: fake_token)
+        assert srv._current_owner() == "oauth-client-7"
+
     def test_missing_access_token_returns_none(self, monkeypatch):
         from ploidy import server as srv
 
@@ -142,42 +152,33 @@ class TestCurrentOwner:
 
 
 class TestResolveStreamOwner:
-    """``_resolve_stream_owner`` is the custom-route equivalent of ``_current_owner``."""
+    """``_resolve_stream_owner`` reads FastMCP's authenticated ASGI user."""
 
-    def _request(self, authorization: str | None = None):
+    def _request(self, access_token=None):
         req = MagicMock()
-        req.headers = {"authorization": authorization} if authorization else {}
+        req.scope = {}
+        if access_token is not None:
+            user = MagicMock()
+            user.access_token = access_token
+            req.scope["user"] = user
         return req
 
-    def test_no_token_map_returns_none(self, monkeypatch):
+    def test_missing_authenticated_user_returns_none(self):
         from ploidy import server as srv
 
-        monkeypatch.setattr(srv, "_TOKEN_MAP", {})
-        assert srv._resolve_stream_owner(self._request("Bearer anything")) is None
+        assert srv._resolve_stream_owner(self._request()) is None
 
-    def test_missing_authorization_header_returns_none(self, monkeypatch):
+    def test_authenticated_user_returns_tenant(self):
         from ploidy import server as srv
 
-        monkeypatch.setattr(srv, "_TOKEN_MAP", {"t": "tenant"})
-        assert srv._resolve_stream_owner(self._request(None)) is None
+        token = MagicMock(client_id="tenant-42", scopes=["debate"])
+        assert srv._resolve_stream_owner(self._request(token)) == "tenant-42"
 
-    def test_non_bearer_scheme_returns_none(self, monkeypatch):
+    def test_token_without_required_scope_returns_none(self):
         from ploidy import server as srv
 
-        monkeypatch.setattr(srv, "_TOKEN_MAP", {"t": "tenant"})
-        assert srv._resolve_stream_owner(self._request("Basic Zm9vOmJhcg==")) is None
-
-    def test_valid_bearer_token_returns_tenant(self, monkeypatch):
-        from ploidy import server as srv
-
-        monkeypatch.setattr(srv, "_TOKEN_MAP", {"tok": "tenant-42"})
-        assert srv._resolve_stream_owner(self._request("Bearer tok")) == "tenant-42"
-
-    def test_unknown_bearer_token_returns_none(self, monkeypatch):
-        from ploidy import server as srv
-
-        monkeypatch.setattr(srv, "_TOKEN_MAP", {"tok": "tenant-42"})
-        assert srv._resolve_stream_owner(self._request("Bearer unknown")) is None
+        token = MagicMock(client_id="tenant-42", scopes=[])
+        assert srv._resolve_stream_owner(self._request(token)) is None
 
 
 class TestBuildLockProvider:
@@ -261,6 +262,8 @@ class TestBuildAuthKwargs:
     """``_build_auth_kwargs`` decides which auth primitives FastMCP gets."""
 
     def test_bearer_mode_with_tokens_sets_only_token_verifier(self, monkeypatch):
+        from mcp.server.fastmcp import FastMCP
+
         from ploidy import server as srv
 
         monkeypatch.setattr(srv, "_AUTH_MODE", "bearer")
@@ -269,7 +272,9 @@ class TestBuildAuthKwargs:
         assert "token_verifier" in kwargs
         assert isinstance(kwargs["token_verifier"], srv._PloidyTokenVerifier)
         assert "auth_server_provider" not in kwargs
-        assert "auth" not in kwargs
+        assert kwargs["auth"].required_scopes == ["debate"]
+        # Regression: FastMCP requires AuthSettings whenever a verifier is set.
+        FastMCP("bearer-boot", **kwargs)
 
     def test_bearer_mode_without_tokens_returns_empty(self, monkeypatch):
         # PLOIDY_AUTH_MODE=bearer with no tokens is a valid
@@ -282,6 +287,8 @@ class TestBuildAuthKwargs:
         assert kwargs == {}
 
     def test_oauth_mode_sets_provider_and_auth_settings(self, monkeypatch):
+        from mcp.server.fastmcp import FastMCP
+
         from ploidy import server as srv
         from ploidy.oauth import PloidyOAuthProvider
 
@@ -301,17 +308,28 @@ class TestBuildAuthKwargs:
         # token map exists — that would create two concurrent auth
         # surfaces, which is what ``both`` mode is for.
         assert "token_verifier" not in kwargs
+        FastMCP("oauth-boot", **kwargs)
 
-    def test_both_mode_enables_bearer_and_oauth(self, monkeypatch):
+    async def test_both_mode_combines_bearer_and_oauth_in_one_provider(self, monkeypatch):
+        from mcp.server.fastmcp import FastMCP
+
         from ploidy import server as srv
         from ploidy.oauth import PloidyOAuthProvider
 
         monkeypatch.setattr(srv, "_AUTH_MODE", "both")
         monkeypatch.setattr(srv, "_TOKEN_MAP", {"tok": "tenant"})
         kwargs = srv._build_auth_kwargs()
-        assert isinstance(kwargs["token_verifier"], srv._PloidyTokenVerifier)
         assert isinstance(kwargs["auth_server_provider"], PloidyOAuthProvider)
+        assert "token_verifier" not in kwargs
         assert kwargs["auth"] is not None
+        # Regression: provider+verifier is forbidden by FastMCP. The provider
+        # owns the static fallback instead, so construction and verification work.
+        FastMCP("both-boot", **kwargs)
+        provider = kwargs["auth_server_provider"]
+        access = await provider.load_access_token("tok")
+        assert access is not None
+        assert access.client_id == "tenant"
+        await provider._store.close()
 
     def test_oauth_mode_without_tokens_still_works(self, monkeypatch):
         # OAuth does not rely on PLOIDY_TOKENS — a fresh deployment with
@@ -329,9 +347,9 @@ class TestBuildAuthKwargs:
 class _FakeRequest:
     """Minimal async request stand-in for the SSE handler."""
 
-    def __init__(self, body, headers: dict | None = None):
+    def __init__(self, body, *, scope: dict | None = None):
         self._body = body
-        self.headers = headers or {}
+        self.scope = scope or {}
 
     async def json(self):
         return self._body
@@ -361,8 +379,10 @@ class _FakeService:
         self._progress_events = list(progress_events)
         self._run_result = run_result or {"debate_id": "x", "phase": "complete"}
         self._run_error = run_error
+        self.last_kwargs = None
 
-    async def run_auto(self, *, progress=None, **_):
+    async def run_auto(self, *, progress=None, **kwargs):
+        self.last_kwargs = kwargs
         if progress is not None:
             for ev in self._progress_events:
                 await progress(ev)
@@ -388,6 +408,39 @@ class TestStreamDebateRoute:
         monkeypatch.setattr(srv, "_init", fake_init)
         resp = await srv._stream_debate(_FakeRequest(body=[1, 2, 3]))
         assert resp.status_code == 400
+
+    async def test_auth_enabled_rejects_missing_bearer_before_init(self, monkeypatch):
+        from ploidy import server as srv
+
+        monkeypatch.setattr(srv, "_AUTH_MODE", "bearer")
+        monkeypatch.setattr(srv, "_TOKEN_MAP", {"tok": "tenant"})
+
+        async def should_not_init():
+            raise AssertionError("unauthorized request reached service initialization")
+
+        monkeypatch.setattr(srv, "_init", should_not_init)
+        resp = await srv._stream_debate(_FakeRequest(body={"prompt": "q"}))
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == "Bearer"
+
+    async def test_authenticated_scope_sets_stream_tenant(self, monkeypatch):
+        from ploidy import server as srv
+
+        fake_svc = _FakeService()
+
+        async def fake_init():
+            return fake_svc
+
+        token = MagicMock(client_id="tenant-stream", scopes=["debate"])
+        user = MagicMock(access_token=token)
+        monkeypatch.setattr(srv, "_AUTH_MODE", "oauth")
+        monkeypatch.setattr(srv, "_TOKEN_MAP", {})
+        monkeypatch.setattr(srv, "_init", fake_init)
+
+        resp = await srv._stream_debate(_FakeRequest(body={"prompt": "q"}, scope={"user": user}))
+        await _drain_stream(resp)
+        assert fake_svc.last_kwargs["owner_id"] == "tenant-stream"
+        assert fake_svc.last_kwargs["tenant"] == "tenant-stream"
 
     async def test_progress_events_and_result_reach_the_client(self, monkeypatch):
         from ploidy import server as srv

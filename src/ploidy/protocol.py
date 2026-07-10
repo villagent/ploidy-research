@@ -119,4 +119,39 @@ class DebateProtocol:
                 f"Message phase {message.phase.value} does not match "
                 f"current phase {self.phase.value}"
             )
+        if message.phase in {DebatePhase.POSITION, DebatePhase.CHALLENGE} and self.has_submitted(
+            message.session_id, message.phase
+        ):
+            raise ProtocolError(
+                f"Session {message.session_id} already submitted a {message.phase.value} message"
+            )
         self.messages.append(message)
+
+    def has_submitted(self, session_id: str, phase: DebatePhase) -> bool:
+        """Return whether a session already submitted in the given phase."""
+        return any(
+            message.session_id == session_id and message.phase == phase for message in self.messages
+        )
+
+    def _all_sessions_submitted(
+        self,
+        session_ids: set[str],
+        phase: DebatePhase,
+    ) -> bool:
+        """Return whether every member of a valid roster submitted once."""
+        submitted = {message.session_id for message in self.messages if message.phase == phase}
+        return len(session_ids) >= 2 and session_ids <= submitted
+
+    def all_positions_submitted(self, session_ids: set[str]) -> bool:
+        """Return whether every participating session has submitted a position.
+
+        At least two sessions are required before the position barrier can
+        open.  This preserves the Independent -> Position anti-anchoring
+        contract even when the Deep session submits before a Fresh session
+        has joined.
+        """
+        return self._all_sessions_submitted(session_ids, DebatePhase.POSITION)
+
+    def all_challenges_submitted(self, session_ids: set[str]) -> bool:
+        """Return whether every frozen-roster session submitted a challenge."""
+        return self._all_sessions_submitted(session_ids, DebatePhase.CHALLENGE)

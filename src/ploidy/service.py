@@ -29,6 +29,7 @@ from ploidy.injection import (
     VALID_LANGUAGES,
     append_language,
     build_deep_prompt,
+    truncate_context,
 )
 from ploidy.lockprovider import AsyncLockProvider, LockProvider
 from ploidy.metrics import metrics, tenant_label
@@ -267,17 +268,104 @@ class DebateService:
         docs: list[str],
         context_sources: list[str] | None,
         blocked_sources: list[str] | None,
+        target_lease: str | None,
+        allowed_sources: list[str] | None,
     ) -> ContextManifest:
         """Return provenance evidence for loaded context after policy checks."""
         return build_context_manifest(
             docs,
             context_sources=context_sources,
             blocked_sources=blocked_sources,
+            target_lease=target_lease,
+            allowed_sources=allowed_sources,
         )
+
+    @staticmethod
+    def _context_config(manifest: ContextManifest) -> dict[str, Any]:
+        """Build persisted context-scope config from a manifest."""
+        return {
+            "context_manifest": manifest.as_dict(),
+            "target_lease": manifest.target_lease,
+            "scope_policy": manifest.scope_policy(),
+        }
+
+    @staticmethod
+    def _session_scope_metadata(manifest: ContextManifest) -> dict[str, Any]:
+        """Build session metadata inherited by child debate sessions."""
+        return {
+            "context_manifest": manifest.as_dict(),
+            "scope_policy": manifest.scope_policy(),
+        }
+
+    @staticmethod
+    def _parse_config(raw_config: Any) -> dict[str, Any]:
+        """Parse a stored config_json value into a dict."""
+        if isinstance(raw_config, dict):
+            return raw_config
+        if not raw_config:
+            return {}
+        try:
+            parsed = json.loads(raw_config)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @classmethod
+    def _decorate_debate_record(cls, debate: dict[str, Any]) -> dict[str, Any]:
+        """Add parsed config fields to a debate row without dropping raw JSON."""
+        record = dict(debate)
+        config = cls._parse_config(record.get("config_json"))
+        record["config"] = config
+        record["context_manifest"] = config.get("context_manifest")
+        record["target_lease"] = config.get("target_lease") or (
+            config.get("context_manifest") or {}
+        ).get("target_lease")
+        record["scope_policy"] = config.get("scope_policy")
+        return record
+
+    async def _load_debate_config(
+        self, debate_id: str, owner_id: str | None = None
+    ) -> dict[str, Any]:
+        """Load parsed debate config from the persistent store."""
+        debate = await self.store.get_debate(debate_id, owner_id=owner_id)
+        if debate is None:
+            return {}
+        return self._parse_config(debate.get("config_json"))
+
+    @staticmethod
+    def _resume_guard(manifest: ContextManifest) -> dict[str, Any]:
+        """Build the guard that must survive HITL pause/resume."""
+        policy = manifest.scope_policy()
+        return {
+            "requires_context_manifest": policy["requires_context_manifest"],
+            "requires_target_lease": policy["requires_target_lease"],
+            "target_lease": policy["target_lease"],
+        }
+
+    @staticmethod
+    def _enforce_resume_guard(paused_context: dict[str, Any]) -> None:
+        """Reject resume when the persisted scope proof was lost."""
+        guard = paused_context.get("resume_guard") or {}
+        if not guard:
+            return
+
+        missing = []
+        if guard.get("requires_context_manifest") and not paused_context.get("context_manifest"):
+            missing.append("context_manifest")
+        policy = paused_context.get("scope_policy") or {}
+        if guard.get("requires_target_lease") and not (
+            paused_context.get("target_lease") or policy.get("target_lease")
+        ):
+            missing.append("target_lease")
+        if missing:
+            raise ProtocolError(
+                "Scope confirmation required before resume: missing " + ", ".join(missing)
+            )
 
     def _cleanup_debate(self, debate_id: str) -> None:
         self.protocols.pop(debate_id, None)
         self.debate_owners.pop(debate_id, None)
+        self.paused_debates.pop(debate_id, None)
         # Local providers hold one asyncio.Lock per key and leak memory if we
         # never drop them; Redis provider is keyless and ignores the hint.
         if isinstance(self.lock_provider, AsyncLockProvider):
@@ -314,6 +402,7 @@ class DebateService:
         effort_level: EffortLevel,
         model: str | None,
         prefix: str,
+        metadata: dict[str, Any] | None = None,
     ) -> list[SessionContext]:
         """Create and persist ``count`` sessions of one role.
 
@@ -322,10 +411,12 @@ class DebateService:
         context construction, DB row insertion, and in-memory bookkeeping.
         """
         created: list[SessionContext] = []
+        session_metadata = dict(metadata or {})
         save_kwargs: dict[str, Any] = {
             "delivery_mode": delivery_mode.value,
             "model": model,
             "effort": effort,
+            "metadata": session_metadata,
         }
         if context_documents:
             save_kwargs["context_documents"] = context_documents
@@ -339,6 +430,7 @@ class DebateService:
                 delivery_mode=delivery_mode,
                 effort=effort_level,
                 model=model,
+                metadata=dict(session_metadata),
             )
             await self.store.save_session(sid, debate_id, persisted_role, prompt, **save_kwargs)
             self.sessions[sid] = ctx
@@ -350,9 +442,9 @@ class DebateService:
     def _require_owner(self, debate_id: str, caller: str | None) -> None:
         """Raise PloidyError if ``caller`` is not allowed to touch the debate.
 
-        Legacy (unscoped) debates — ``owner_id=None`` — are visible to every
-        caller so single-tenant deployments and tests don't break. Once a
-        debate has an owner, only that owner passes.
+        Legacy (unscoped) debates — ``owner_id=None`` — remain available only
+        to unscoped callers. Authenticated tenants must never inherit access
+        to pre-tenant rows. Once a debate has an owner, only that owner passes.
         """
         owner = self.debate_owners.get(debate_id, _SENTINEL_UNKNOWN)
         if owner is _SENTINEL_UNKNOWN:
@@ -362,7 +454,9 @@ class DebateService:
             # lookups if they need the DB-only path.
             raise PloidyError(f"Debate {debate_id} not found")
         if owner is None:
-            return
+            if caller is None:
+                return
+            raise PloidyError(f"Debate {debate_id} not found")
         if caller != owner:
             raise PloidyError(f"Debate {debate_id} not found")
 
@@ -448,10 +542,7 @@ class DebateService:
                 protocol.messages.append(msg)
 
             if protocol.phase == DebatePhase.POSITION:
-                position_sessions = {
-                    m.session_id for m in protocol.messages if m.phase == DebatePhase.POSITION
-                }
-                if len(session_ids) >= 2 and set(session_ids) <= position_sessions:
+                if protocol.all_positions_submitted(set(session_ids)):
                     try:
                         protocol.advance_phase()
                     except ProtocolError:
@@ -531,6 +622,8 @@ class DebateService:
         *,
         context_sources: list[str] | None = None,
         blocked_sources: list[str] | None = None,
+        target_lease: str | None = None,
+        allowed_sources: list[str] | None = None,
         tenant: str | None = None,
         owner_id: str | None = None,
     ) -> dict[str, Any]:
@@ -545,11 +638,14 @@ class DebateService:
         for i, doc in enumerate(docs):
             self._validate_length(doc, self.max_content_len, f"context_documents[{i}]")
         self._enforce_context_budget(docs)
-        manifest = self._build_context_manifest(docs, context_sources, blocked_sources)
+        manifest = self._build_context_manifest(
+            docs, context_sources, blocked_sources, target_lease, allowed_sources
+        )
 
         debate_id = uuid.uuid4().hex[:12]
-        config = {"context_manifest": manifest.as_dict()}
+        config = self._context_config(manifest)
         await self.store.save_debate(debate_id, prompt, config=config, owner_id=owner_id)
+        scope_metadata = self._session_scope_metadata(manifest)
 
         deep_id = f"{debate_id}-deep-{uuid.uuid4().hex[:6]}"
         deep_ctx = SessionContext(
@@ -557,6 +653,7 @@ class DebateService:
             role=SessionRole.DEEP,
             base_prompt=prompt,
             context_documents=docs,
+            metadata=scope_metadata,
         )
         await self.store.save_session(
             deep_id,
@@ -587,6 +684,8 @@ class DebateService:
             "phase": protocol.phase.value,
             "prompt": prompt,
             "context_manifest": manifest.as_dict(),
+            "target_lease": manifest.target_lease,
+            "scope_policy": manifest.scope_policy(),
             "message": f"Debate created. Share this debate_id with the Fresh session: {debate_id}",
         }
 
@@ -603,12 +702,6 @@ class DebateService:
             raise PloidyError(f"Debate {debate_id} not found")
         self._require_owner(debate_id, owner_id)
 
-        current_count = len(self.debate_sessions.get(debate_id, []))
-        if current_count >= self.max_sessions_per_debate:
-            raise ProtocolError(
-                f"Debate already has {current_count} sessions (max {self.max_sessions_per_debate})"
-            )
-
         role_map = {"fresh": SessionRole.FRESH, "semi_fresh": SessionRole.SEMI_FRESH}
         session_role = role_map.get(role)
         if session_role is None:
@@ -620,6 +713,14 @@ class DebateService:
             "active": DeliveryMode.ACTIVE,
         }
         dm = dm_map.get(delivery_mode, DeliveryMode.NONE)
+        config = await self._load_debate_config(debate_id)
+        scope_policy = config.get("scope_policy")
+        context_manifest = config.get("context_manifest")
+        scope_metadata = (
+            {"context_manifest": context_manifest, "scope_policy": scope_policy}
+            if scope_policy
+            else {}
+        )
 
         prefix = "sf" if session_role == SessionRole.SEMI_FRESH else "fresh"
         sid = f"{debate_id}-{prefix}-{uuid.uuid4().hex[:6]}"
@@ -629,21 +730,42 @@ class DebateService:
             base_prompt=protocol.prompt,
             context_documents=[],
             delivery_mode=dm,
+            metadata=scope_metadata,
         )
-        await self.store.save_session(
-            sid,
-            debate_id,
-            role,
-            protocol.prompt,
-            context_documents=ctx.context_documents,
-            delivery_mode=ctx.delivery_mode.value,
-            compressed_summary=ctx.compressed_summary,
-            metadata=ctx.metadata,
-        )
+        lock = self._get_lock(debate_id)
+        async with lock:
+            protocol = self.protocols.get(debate_id)
+            if protocol is None:
+                raise PloidyError(f"Debate {debate_id} not found")
+            self._require_owner(debate_id, owner_id)
+            # Freeze the participant roster before the first position is
+            # submitted. The phase check and roster persistence share the
+            # debate lock with submit_position so neither can race the other.
+            if protocol.phase != DebatePhase.INDEPENDENT:
+                raise ProtocolError(
+                    "Cannot join after position submission has begun; "
+                    "the participant roster is frozen"
+                )
+            current_count = len(self.debate_sessions.get(debate_id, []))
+            if current_count >= self.max_sessions_per_debate:
+                raise ProtocolError(
+                    f"Debate already has {current_count} sessions "
+                    f"(max {self.max_sessions_per_debate})"
+                )
+            await self.store.save_session(
+                sid,
+                debate_id,
+                role,
+                protocol.prompt,
+                context_documents=ctx.context_documents,
+                delivery_mode=ctx.delivery_mode.value,
+                compressed_summary=ctx.compressed_summary,
+                metadata=ctx.metadata,
+            )
 
-        self.sessions[sid] = ctx
-        self.debate_sessions[debate_id].append(sid)
-        self.session_to_debate[sid] = debate_id
+            self.sessions[sid] = ctx
+            self.debate_sessions[debate_id].append(sid)
+            self.session_to_debate[sid] = debate_id
 
         logger.info("Session %s joined debate %s as %s", sid, debate_id, role)
 
@@ -672,6 +794,10 @@ class DebateService:
             protocol = self.protocols[debate_id]
 
             if protocol.phase == DebatePhase.INDEPENDENT:
+                if len(self.debate_sessions.get(debate_id, [])) < 2:
+                    raise ProtocolError(
+                        "At least two sessions must join before position submission"
+                    )
                 protocol.advance_phase()
 
             if protocol.phase != DebatePhase.POSITION:
@@ -691,8 +817,7 @@ class DebateService:
             ).inc()
 
             session_ids = set(self.debate_sessions[debate_id])
-            submitted = {m.session_id for m in protocol.messages if m.phase == DebatePhase.POSITION}
-            all_in = len(session_ids) >= 2 and session_ids <= submitted
+            all_in = protocol.all_positions_submitted(session_ids)
 
             if all_in:
                 protocol.advance_phase()
@@ -777,6 +902,11 @@ class DebateService:
             if protocol.phase != DebatePhase.CHALLENGE:
                 raise ProtocolError(
                     f"Cannot converge from phase {protocol.phase.value}, must be in CHALLENGE"
+                )
+            session_ids = set(self.debate_sessions.get(debate_id, []))
+            if not protocol.all_challenges_submitted(session_ids):
+                raise ProtocolError(
+                    "Cannot converge until every participating session has submitted a challenge"
                 )
 
             protocol.advance_phase()  # → CONVERGENCE
@@ -889,7 +1019,7 @@ class DebateService:
 
     async def delete(self, debate_id: str, *, owner_id: str | None = None) -> dict[str, Any]:
         debate = await self.store.get_debate(debate_id, owner_id=owner_id)
-        if debate is None:
+        if debate is None or debate.get("owner_id") != owner_id:
             raise PloidyError(f"Debate {debate_id} not found")
 
         self._cleanup_debate(debate_id)
@@ -910,10 +1040,23 @@ class DebateService:
         for sid in session_ids:
             ctx = self.sessions.get(sid)
             if ctx:
-                sessions_info.append({"session_id": sid, "role": ctx.role.value})
+                sessions_info.append(
+                    {
+                        "session_id": sid,
+                        "role": ctx.role.value,
+                        "scope_policy": ctx.metadata.get("scope_policy"),
+                    }
+                )
 
+        positions_released = protocol.all_positions_submitted(set(session_ids))
         messages_by_phase: dict[str, list[dict]] = {}
         for msg in protocol.messages:
+            # Position content stays sealed until every participating session
+            # has committed its own position.  Otherwise a polling peer could
+            # anchor on the first submission and defeat the protocol's core
+            # Independent -> Position barrier.
+            if msg.phase == DebatePhase.POSITION and not positions_released:
+                continue
             phase = msg.phase.value
             messages_by_phase.setdefault(phase, []).append(
                 {
@@ -924,19 +1067,31 @@ class DebateService:
                 }
             )
 
+        config = await self._load_debate_config(debate_id, owner_id=owner_id)
+        paused_context = self.paused_debates.get(debate_id)
         return {
             "debate_id": debate_id,
             "phase": protocol.phase.value,
             "prompt": protocol.prompt,
             "message_count": len(protocol.messages),
+            "positions_released": positions_released,
             "sessions": sessions_info,
             "messages": messages_by_phase,
+            "config": config,
+            "context_manifest": config.get("context_manifest"),
+            "target_lease": config.get("target_lease")
+            or (config.get("context_manifest") or {}).get("target_lease"),
+            "scope_policy": config.get("scope_policy"),
+            "resume_guard": (paused_context or {}).get("resume_guard"),
         }
 
     async def history(self, limit: int = 50, *, owner_id: str | None = None) -> dict[str, Any]:
         clamped = min(max(limit, 1), 200)
         debates = await self.store.list_debates(clamped, owner_id=owner_id)
-        return {"debates": debates, "total": len(debates), "limit": clamped}
+        if owner_id is None:
+            debates = [debate for debate in debates if debate.get("owner_id") is None]
+        decorated = [self._decorate_debate_record(debate) for debate in debates]
+        return {"debates": decorated, "total": len(decorated), "limit": clamped}
 
     # ------------------------------------------------------------------
     # Multi-step operations: run_solo, run_auto, review
@@ -952,6 +1107,8 @@ class DebateService:
         context_documents: list[str] | None = None,
         context_sources: list[str] | None = None,
         blocked_sources: list[str] | None = None,
+        target_lease: str | None = None,
+        allowed_sources: list[str] | None = None,
         deep_label: str = "Deep",
         fresh_label: str = "Fresh",
         *,
@@ -976,15 +1133,18 @@ class DebateService:
         for i, doc in enumerate(docs):
             self._validate_length(doc, self.max_content_len, f"context_documents[{i}]")
         self._enforce_context_budget(docs)
-        manifest = self._build_context_manifest(docs, context_sources, blocked_sources)
+        manifest = self._build_context_manifest(
+            docs, context_sources, blocked_sources, target_lease, allowed_sources
+        )
 
         debate_id = uuid.uuid4().hex[:12]
         config = {
             "mode": "solo",
             "deep_label": deep_label,
             "fresh_label": fresh_label,
-            "context_manifest": manifest.as_dict(),
+            **self._context_config(manifest),
         }
+        scope_metadata = self._session_scope_metadata(manifest)
         metrics().debate_started.labels(tenant=tenant_label(owner_id), mode="solo").inc()
 
         try:
@@ -999,6 +1159,7 @@ class DebateService:
                     base_prompt=prompt,
                     context_documents=docs,
                     delivery_mode=DeliveryMode.PASSIVE,
+                    metadata=scope_metadata,
                 )
                 fresh_ctx = SessionContext(
                     session_id=fresh_id,
@@ -1006,6 +1167,7 @@ class DebateService:
                     base_prompt=prompt,
                     context_documents=[],
                     delivery_mode=DeliveryMode.NONE,
+                    metadata=scope_metadata,
                 )
                 await self.store.save_session(
                     deep_id,
@@ -1014,6 +1176,7 @@ class DebateService:
                     prompt,
                     context_documents=docs,
                     delivery_mode=deep_ctx.delivery_mode.value,
+                    metadata=deep_ctx.metadata,
                 )
                 await self.store.save_session(
                     fresh_id,
@@ -1022,6 +1185,7 @@ class DebateService:
                     prompt,
                     context_documents=[],
                     delivery_mode=fresh_ctx.delivery_mode.value,
+                    metadata=fresh_ctx.metadata,
                 )
                 self.sessions[deep_id] = deep_ctx
                 self.sessions[fresh_id] = fresh_ctx
@@ -1096,6 +1260,9 @@ class DebateService:
                     meta_analysis=result.meta_analysis,
                 )
             self._cleanup_debate(debate_id)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._delete_failed_debate(debate_id))
+            raise
         except Exception:
             await self._delete_failed_debate(debate_id)
             raise
@@ -1130,6 +1297,8 @@ class DebateService:
             "mode": "solo",
             "config": config,
             "context_manifest": manifest.as_dict(),
+            "target_lease": manifest.target_lease,
+            "scope_policy": manifest.scope_policy(),
             "synthesis": result.synthesis,
             "rendered_markdown": rendered_markdown,
             "confidence": result.confidence,
@@ -1151,6 +1320,8 @@ class DebateService:
         context_documents: list[str] | None = None,
         context_sources: list[str] | None = None,
         blocked_sources: list[str] | None = None,
+        target_lease: str | None = None,
+        allowed_sources: list[str] | None = None,
         fresh_role: str = "fresh",
         delivery_mode: str = "none",
         pause_at: str | None = None,
@@ -1172,6 +1343,11 @@ class DebateService:
         # ── Validate inputs ─────────────────────────────────────────────
         self._validate_length(prompt, self.max_prompt_len, "prompt")
         docs = context_documents or []
+        if not docs or not any(doc.strip() for doc in docs):
+            raise ProtocolError(
+                "Auto debate requires non-empty context_documents for the Deep side; "
+                "role labels alone do not create context asymmetry."
+            )
         if len(docs) > self.max_context_docs:
             raise ProtocolError(
                 f"Too many context documents ({len(docs)} > {self.max_context_docs})"
@@ -1179,7 +1355,9 @@ class DebateService:
         for i, doc in enumerate(docs):
             self._validate_length(doc, self.max_content_len, f"context_documents[{i}]")
         self._enforce_context_budget(docs)
-        manifest = self._build_context_manifest(docs, context_sources, blocked_sources)
+        manifest = self._build_context_manifest(
+            docs, context_sources, blocked_sources, target_lease, allowed_sources
+        )
 
         role_map = {"fresh": SessionRole.FRESH, "semi_fresh": SessionRole.SEMI_FRESH}
         auto_role = role_map.get(fresh_role)
@@ -1226,17 +1404,30 @@ class DebateService:
             raise ProtocolError(
                 f"Invalid injection_mode '{injection_mode}'. Must be one of {valid}"
             )
-        if not (0 <= context_pct <= 100):
-            raise ProtocolError("context_pct must be 0..100")
+        if not (1 <= context_pct <= 100):
+            raise ProtocolError(
+                "context_pct must be 1..100 so the Deep side receives actual context"
+            )
         if language not in VALID_LANGUAGES:
             raise ProtocolError(
                 f"Invalid language '{language}'. Must be one of {sorted(VALID_LANGUAGES)}"
+            )
+        if deep_model and fresh_model and deep_model != fresh_model:
+            raise ProtocolError(
+                "deep_model and fresh_model must match; Ploidy isolates context, not model"
+            )
+        raw_context = "\n\n".join(docs)
+        if not truncate_context(raw_context, context_pct).strip():
+            raise ProtocolError(
+                "context_pct truncates the supplied context to empty; "
+                "increase context_pct or provide more Deep context"
             )
 
         try:
             from ploidy.api_client import (
                 compress_failures_only,
                 compress_position,
+                configured_model,
                 generate_challenge,
                 generate_experienced_position,
                 generate_fresh_position,
@@ -1252,7 +1443,10 @@ class DebateService:
                 "ANTHROPIC_API_KEY to auto-configure the Anthropic endpoint)."
             )
 
-        raw_context = "\n\n".join(docs) if docs else ""
+        resolved_model = deep_model or fresh_model or configured_model()
+        deep_model = resolved_model
+        fresh_model = resolved_model
+
         deep_user_prompt, deep_sys_prompt = build_deep_prompt(
             raw_context, prompt, mode=injection_mode, context_pct=context_pct
         )
@@ -1270,11 +1464,19 @@ class DebateService:
             "fresh_model": fresh_model,
             "fresh_role": fresh_role,
             "delivery_mode": delivery_mode,
-            "context_manifest": manifest.as_dict(),
+            **self._context_config(manifest),
         }
+        scope_metadata = self._session_scope_metadata(manifest)
 
         debate_id = uuid.uuid4().hex[:12]
-        await self.store.save_debate(debate_id, prompt, config=config, owner_id=owner_id)
+        try:
+            await self.store.save_debate(debate_id, prompt, config=config, owner_id=owner_id)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._delete_failed_debate(debate_id))
+            raise
+        except Exception:
+            await self._delete_failed_debate(debate_id)
+            raise
         metrics().debate_started.labels(tenant=tenant_label(owner_id), mode="auto").inc()
 
         protocol = DebateProtocol(debate_id, prompt)
@@ -1282,32 +1484,41 @@ class DebateService:
         self.debate_sessions[debate_id] = []
         self.debate_owners[debate_id] = owner_id
 
-        deep_sessions = await self._provision_sessions(
-            debate_id=debate_id,
-            count=deep_n,
-            role=SessionRole.DEEP,
-            persisted_role="deep",
-            prompt=prompt,
-            context_documents=docs,
-            delivery_mode=DeliveryMode.PASSIVE,
-            effort=effort,
-            effort_level=effort_level,
-            model=deep_model,
-            prefix="deep",
-        )
-        fresh_sessions = await self._provision_sessions(
-            debate_id=debate_id,
-            count=fresh_n,
-            role=auto_role,
-            persisted_role=fresh_role,
-            prompt=prompt,
-            context_documents=[],
-            delivery_mode=dm,
-            effort=effort,
-            effort_level=effort_level,
-            model=fresh_model,
-            prefix="sf" if auto_role == SessionRole.SEMI_FRESH else "fresh",
-        )
+        try:
+            deep_sessions = await self._provision_sessions(
+                debate_id=debate_id,
+                count=deep_n,
+                role=SessionRole.DEEP,
+                persisted_role="deep",
+                prompt=prompt,
+                context_documents=docs,
+                delivery_mode=DeliveryMode.PASSIVE,
+                effort=effort,
+                effort_level=effort_level,
+                model=deep_model,
+                prefix="deep",
+                metadata=scope_metadata,
+            )
+            fresh_sessions = await self._provision_sessions(
+                debate_id=debate_id,
+                count=fresh_n,
+                role=auto_role,
+                persisted_role=fresh_role,
+                prompt=prompt,
+                context_documents=[],
+                delivery_mode=dm,
+                effort=effort,
+                effort_level=effort_level,
+                model=fresh_model,
+                prefix="sf" if auto_role == SessionRole.SEMI_FRESH else "fresh",
+                metadata=scope_metadata,
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(self._delete_failed_debate(debate_id))
+            raise
+        except Exception:
+            await self._delete_failed_debate(debate_id)
+            raise
 
         logger.info(
             "Auto-debate %s: Deep(%d) x %s(%d), effort=%s, injection=%s",
@@ -1330,15 +1541,17 @@ class DebateService:
                 fresh_n=fresh_n,
             )
 
+            deep_kwargs: dict[str, Any] = {
+                "effort": effort,
+                "model": deep_model,
+            }
+            if deep_sys_prompt is not None:
+                deep_kwargs["system_prompt"] = deep_sys_prompt
+            # ``build_deep_prompt`` already placed non-system context in the
+            # user prompt. Passing ``context_documents`` again would inject
+            # the same raw context twice and change the intended condition.
             deep_tasks = [
-                generate_experienced_position(
-                    deep_user_prompt,
-                    context_documents=(
-                        None if injection_mode != "raw" or context_pct < 100 else docs
-                    ),
-                    effort=effort,
-                    model=deep_model,
-                )
+                generate_experienced_position(deep_user_prompt, **deep_kwargs)
                 for _ in range(deep_n)
             ]
             deep_positions = await asyncio.gather(*deep_tasks)
@@ -1425,6 +1638,10 @@ class DebateService:
                     "fresh_model": fresh_model,
                     "paused_phase": "challenge",
                     "protocol_phase": protocol.phase.value,
+                    "context_manifest": manifest.as_dict(),
+                    "target_lease": manifest.target_lease,
+                    "scope_policy": manifest.scope_policy(),
+                    "resume_guard": self._resume_guard(manifest),
                 }
                 self.paused_debates[debate_id] = paused_ctx
                 await self.store.update_debate_status(debate_id, "paused")
@@ -1436,6 +1653,9 @@ class DebateService:
                     "mode": "auto_hitl",
                     "config": config,
                     "context_manifest": manifest.as_dict(),
+                    "target_lease": manifest.target_lease,
+                    "scope_policy": manifest.scope_policy(),
+                    "resume_guard": paused_ctx["resume_guard"],
                     "positions": {
                         "deep": [p[:500] for p in deep_positions],
                         "fresh": [p[:500] for p in fresh_positions],
@@ -1451,26 +1671,41 @@ class DebateService:
                 fresh_positions, fresh_role.replace("_", "-").title()
             )
 
-            # Challenges run concurrently — each LLM call is independent.
-            deep_challenge, fresh_challenge = await asyncio.gather(
+            # Every seat receives its own challenge call. A 2n debate must
+            # therefore produce four independent responses, not one response
+            # per role copied into multiple session rows.
+            challenge_tasks = [
                 generate_challenge(
-                    own_position=deep_aggregate,
+                    own_position=position,
                     other_position=fresh_aggregate,
                     own_role="deep",
                     other_role=fresh_role,
                     effort=effort,
                     model=deep_model,
-                ),
+                )
+                for position in deep_positions
+            ]
+            challenge_tasks.extend(
                 generate_challenge(
-                    own_position=fresh_aggregate,
+                    own_position=position,
                     other_position=deep_aggregate,
                     own_role=fresh_role,
                     other_role="deep",
                     effort=effort,
                     model=fresh_model,
-                ),
+                )
+                for position in fresh_positions
             )
-
+            generated_challenges = await asyncio.gather(*challenge_tasks)
+            deep_challenges = list(generated_challenges[: len(deep_sessions)])
+            fresh_challenges = list(generated_challenges[len(deep_sessions) :])
+            deep_actions = [_parse_dominant_action(text) for text in deep_challenges]
+            fresh_actions = [_parse_dominant_action(text) for text in fresh_challenges]
+            deep_challenge = _aggregate_positions(deep_challenges, "Deep Challenge")
+            fresh_challenge = _aggregate_positions(
+                fresh_challenges,
+                f"{fresh_role.replace('_', '-').title()} Challenge",
+            )
             deep_action = _parse_dominant_action(deep_challenge)
             fresh_action = _parse_dominant_action(fresh_challenge)
             await emit(
@@ -1478,43 +1713,50 @@ class DebateService:
                 "challenges_generated",
                 deep_action=deep_action.value,
                 fresh_action=fresh_action.value,
+                deep_actions=[action.value for action in deep_actions],
+                fresh_actions=[action.value for action in fresh_actions],
+                count=len(generated_challenges),
                 deep_preview=deep_challenge[:300],
                 fresh_preview=fresh_challenge[:300],
             )
 
             async with self.store.transaction():
-                for ctx in deep_sessions:
+                for ctx, content, action in zip(
+                    deep_sessions, deep_challenges, deep_actions, strict=True
+                ):
                     ch_msg = DebateMessage(
                         session_id=ctx.session_id,
                         phase=DebatePhase.CHALLENGE,
-                        content=deep_challenge,
+                        content=content,
                         timestamp=_now(),
-                        action=deep_action,
+                        action=action,
                     )
                     protocol.submit_message(ch_msg)
                     await self.store.save_message(
                         debate_id,
                         ctx.session_id,
                         "challenge",
-                        deep_challenge,
-                        deep_action.value,
+                        content,
+                        action.value,
                     )
 
-                for ctx in fresh_sessions:
+                for ctx, content, action in zip(
+                    fresh_sessions, fresh_challenges, fresh_actions, strict=True
+                ):
                     ch_msg = DebateMessage(
                         session_id=ctx.session_id,
                         phase=DebatePhase.CHALLENGE,
-                        content=fresh_challenge,
+                        content=content,
                         timestamp=_now(),
-                        action=fresh_action,
+                        action=action,
                     )
                     protocol.submit_message(ch_msg)
                     await self.store.save_message(
                         debate_id,
                         ctx.session_id,
                         "challenge",
-                        fresh_challenge,
-                        fresh_action.value,
+                        content,
+                        action.value,
                     )
 
             if pause_at == "convergence":
@@ -1523,6 +1765,8 @@ class DebateService:
                     "fresh_ids": [s.session_id for s in fresh_sessions],
                     "deep_positions": list(deep_positions),
                     "fresh_positions": list(fresh_positions),
+                    "deep_challenges": deep_challenges,
+                    "fresh_challenges": fresh_challenges,
                     "deep_challenge": deep_challenge,
                     "fresh_challenge": fresh_challenge,
                     "fresh_role": fresh_role,
@@ -1532,6 +1776,10 @@ class DebateService:
                     "fresh_model": fresh_model,
                     "paused_phase": "convergence",
                     "protocol_phase": protocol.phase.value,
+                    "context_manifest": manifest.as_dict(),
+                    "target_lease": manifest.target_lease,
+                    "scope_policy": manifest.scope_policy(),
+                    "resume_guard": self._resume_guard(manifest),
                 }
                 self.paused_debates[debate_id] = paused_ctx
                 await self.store.update_debate_status(debate_id, "paused")
@@ -1543,9 +1791,16 @@ class DebateService:
                     "mode": "auto_hitl",
                     "config": config,
                     "context_manifest": manifest.as_dict(),
+                    "target_lease": manifest.target_lease,
+                    "scope_policy": manifest.scope_policy(),
+                    "resume_guard": paused_ctx["resume_guard"],
                     "challenges": {
                         "deep": deep_challenge[:500],
                         "fresh": fresh_challenge[:500],
+                    },
+                    "challenge_sessions": {
+                        "deep": [text[:500] for text in deep_challenges],
+                        "fresh": [text[:500] for text in fresh_challenges],
                     },
                     "message": "Debate paused for human review. Use debate_review to continue.",
                 }
@@ -1584,6 +1839,9 @@ class DebateService:
                 meta_analysis=result.meta_analysis,
             )
             self._cleanup_debate(debate_id)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._delete_failed_debate(debate_id))
+            raise
         except Exception:
             await self._delete_failed_debate(debate_id)
             raise
@@ -1625,6 +1883,8 @@ class DebateService:
             "mode": "auto",
             "config": config,
             "context_manifest": manifest.as_dict(),
+            "target_lease": manifest.target_lease,
+            "scope_policy": manifest.scope_policy(),
             "synthesis": result.synthesis,
             "rendered_markdown": rendered_markdown,
             "confidence": result.confidence,
@@ -1660,6 +1920,9 @@ class DebateService:
         if action == "override" and not override_content:
             raise ProtocolError("override_content is required when action='override'")
 
+        if action != "reject":
+            self._enforce_resume_guard(self.paused_debates[debate_id])
+
         ctx = self.paused_debates.pop(debate_id)
         await self.store.clear_paused_context(debate_id)
         protocol = self.protocols.get(debate_id)
@@ -1687,24 +1950,21 @@ class DebateService:
 
         deep_ids = ctx.get("deep_ids", [])
         fresh_ids = ctx.get("fresh_ids", [])
-        deep_id = deep_ids[0] if deep_ids else None
         auto_id = fresh_ids[0] if fresh_ids else None
         fresh_role = ctx["fresh_role"]
 
         await self.store.update_debate_status(debate_id, "active")
 
         if ctx["paused_phase"] == "challenge":
-            deep_positions = ctx.get("deep_positions", [])
-            fresh_positions = ctx.get("fresh_positions", [])
-            deep_pos = _aggregate_positions(deep_positions, "Deep")
-            auto_pos = _aggregate_positions(fresh_positions, fresh_role.replace("_", "-").title())
+            deep_positions = list(ctx.get("deep_positions", []))
+            fresh_positions = list(ctx.get("fresh_positions", []))
 
             if action == "override" and override_content and auto_id:
-                auto_pos = override_content
+                fresh_positions[0] = override_content
                 msg = DebateMessage(
                     session_id=auto_id,
                     phase=DebatePhase.POSITION,
-                    content=auto_pos,
+                    content=override_content,
                     timestamp=_now(),
                 )
                 protocol.messages = [
@@ -1713,7 +1973,7 @@ class DebateService:
                     if not (m.session_id == auto_id and m.phase == DebatePhase.POSITION)
                 ]
                 protocol.submit_message(msg)
-                await self.store.save_message(debate_id, auto_id, "position", auto_pos)
+                await self.store.save_message(debate_id, auto_id, "position", override_content)
 
             protocol.advance_phase()  # → CHALLENGE
 
@@ -1721,28 +1981,35 @@ class DebateService:
             d_model = ctx.get("deep_model")
             f_model = ctx.get("fresh_model")
 
-            deep_challenge, auto_challenge = await asyncio.gather(
+            deep_aggregate = _aggregate_positions(deep_positions, "Deep")
+            fresh_aggregate = _aggregate_positions(
+                fresh_positions, fresh_role.replace("_", "-").title()
+            )
+            challenge_tasks = [
                 generate_challenge(
-                    own_position=deep_pos,
-                    other_position=auto_pos,
+                    own_position=position,
+                    other_position=fresh_aggregate,
                     own_role="deep",
                     other_role=fresh_role,
                     effort=effort,
                     model=d_model,
-                ),
+                )
+                for position in deep_positions
+            ]
+            challenge_tasks.extend(
                 generate_challenge(
-                    own_position=auto_pos,
-                    other_position=deep_pos,
+                    own_position=position,
+                    other_position=deep_aggregate,
                     own_role=fresh_role,
                     other_role="deep",
                     effort=effort,
                     model=f_model,
-                ),
+                )
+                for position in fresh_positions
             )
-
-            for sid, content in [(deep_id, deep_challenge), (auto_id, auto_challenge)]:
-                if sid is None:
-                    continue
+            challenges = await asyncio.gather(*challenge_tasks)
+            challenge_ids = [*deep_ids, *fresh_ids]
+            for sid, content in zip(challenge_ids, challenges, strict=True):
                 ch_action = _parse_dominant_action(content)
                 ch_msg = DebateMessage(
                     session_id=sid,
@@ -1828,11 +2095,28 @@ class DebateService:
         fresh_positions_text = [
             msg_by_session_phase.get((sid, DebatePhase.POSITION), "") for sid in fresh_ids
         ]
+        deep_challenges_text = [
+            msg_by_session_phase[(sid, DebatePhase.CHALLENGE)]
+            for sid in deep_ids
+            if (sid, DebatePhase.CHALLENGE) in msg_by_session_phase
+        ]
+        fresh_challenges_text = [
+            msg_by_session_phase[(sid, DebatePhase.CHALLENGE)]
+            for sid in fresh_ids
+            if (sid, DebatePhase.CHALLENGE) in msg_by_session_phase
+        ]
         deep_challenge_text = (
-            msg_by_session_phase.get((deep_id, DebatePhase.CHALLENGE)) if deep_id else None
+            _aggregate_positions(deep_challenges_text, "Deep Challenge")
+            if deep_challenges_text
+            else None
         )
         fresh_challenge_text = (
-            msg_by_session_phase.get((auto_id, DebatePhase.CHALLENGE)) if auto_id else None
+            _aggregate_positions(
+                fresh_challenges_text,
+                f"{fresh_role.replace('_', '-').title()} Challenge",
+            )
+            if fresh_challenges_text
+            else None
         )
 
         rendered_markdown = render_debate(

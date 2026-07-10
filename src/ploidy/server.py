@@ -143,50 +143,76 @@ class _PloidyTokenVerifier:
 
 def _build_auth_kwargs() -> dict:
     """Assemble the auth kwargs passed to FastMCP based on ``PLOIDY_AUTH_MODE``."""
-    kwargs: dict = {}
-    if _AUTH_MODE in ("bearer", "both") and _TOKEN_MAP:
-        kwargs["token_verifier"] = _PloidyTokenVerifier()
+    from mcp.server.auth.settings import (
+        AuthSettings,
+        ClientRegistrationOptions,
+        RevocationOptions,
+    )
+
+    bearer_enabled = _AUTH_MODE in ("bearer", "both") and bool(_TOKEN_MAP)
+    oauth_enabled = _AUTH_MODE in ("oauth", "both")
+    if not bearer_enabled and not oauth_enabled:
+        return {}
+
+    kwargs: dict = {
+        "auth": AuthSettings(
+            issuer_url=_OAUTH_ISSUER,
+            # Ploidy is a self-contained AS/RS in OAuth modes. In static
+            # bearer mode this URL still identifies the protected resource
+            # in the MCP WWW-Authenticate challenge.
+            resource_server_url=_OAUTH_ISSUER,
+            client_registration_options=(
+                ClientRegistrationOptions(
+                    enabled=True,
+                    valid_scopes=["debate"],
+                    default_scopes=["debate"],
+                )
+                if oauth_enabled
+                else None
+            ),
+            revocation_options=(RevocationOptions(enabled=True) if oauth_enabled else None),
+            required_scopes=["debate"],
+        )
+    }
+
+    static_verifier = _PloidyTokenVerifier() if bearer_enabled else None
+    if oauth_enabled:
+        from ploidy.oauth import PloidyOAuthProvider
+
+        # FastMCP permits exactly one of provider/verifier. In ``both``
+        # mode the OAuth provider delegates unknown tokens to the static
+        # verifier, preserving a single verifier surface while mounting
+        # the OAuth endpoints.
+        oauth_store = DebateStore()
+        kwargs["auth_server_provider"] = PloidyOAuthProvider(
+            oauth_store,
+            fallback_token_verifier=static_verifier,
+        )
+        logger.info("OAuth 2.0 auth server enabled (issuer=%s)", _OAUTH_ISSUER)
+    elif static_verifier is not None:
+        kwargs["token_verifier"] = static_verifier
+
+    if bearer_enabled:
         logger.info(
             "Bearer token auth enabled; %d tenant token(s) loaded",
             len(_TOKEN_MAP),
         )
-    if _AUTH_MODE in ("oauth", "both"):
-        from mcp.server.auth.settings import (
-            AuthSettings,
-            ClientRegistrationOptions,
-            RevocationOptions,
-        )
-
-        from ploidy.oauth import PloidyOAuthProvider
-
-        # The provider lazy-inits its store on first method call, so we
-        # can construct it here before the event loop is running.
-        oauth_store = DebateStore()
-        kwargs["auth_server_provider"] = PloidyOAuthProvider(oauth_store)
-        kwargs["auth"] = AuthSettings(
-            issuer_url=_OAUTH_ISSUER,
-            # Ploidy is a self-contained AS — the MCP tool surface and
-            # the Authorization Server live at the same origin, so the
-            # resource server URL equals the issuer.
-            resource_server_url=_OAUTH_ISSUER,
-            client_registration_options=ClientRegistrationOptions(
-                enabled=True,
-                valid_scopes=["debate"],
-                default_scopes=["debate"],
-            ),
-            revocation_options=RevocationOptions(enabled=True),
-            required_scopes=["debate"],
-        )
-        logger.info("OAuth 2.0 auth server enabled (issuer=%s)", _OAUTH_ISSUER)
     return kwargs
 
 
 _auth_kwargs: dict = _build_auth_kwargs()
 
 
+def _auth_is_enabled() -> bool:
+    """Return whether requests must carry an authenticated bearer token."""
+    if _AUTH_MODE in ("oauth", "both"):
+        return True
+    return _AUTH_MODE == "bearer" and bool(_TOKEN_MAP)
+
+
 def _current_owner() -> str | None:
     """Return the caller's tenant id from the MCP auth context, if any."""
-    if not _TOKEN_MAP:
+    if not _auth_is_enabled():
         return None
     tok = get_access_token()
     return tok.client_id if tok is not None else None
@@ -250,25 +276,30 @@ async def _stream_debate(request):
     / ``challenges_generated`` / ``completed`` frames as they happen, so
     web / Discord clients can render a live progress UI.
 
-    Auth mirrors the MCP tool surface: a ``Bearer`` header with a
-    configured tenant token. Unauthenticated requests land as the
-    unscoped owner when no token map is configured — matching every
-    other tool.
+    Auth mirrors the MCP tool surface. When bearer or OAuth auth is
+    configured, missing/invalid credentials are rejected before parsing
+    the body or initialising the service. With auth disabled, requests
+    retain the unscoped local-development behaviour.
     """
     import asyncio as _asyncio
 
-    from starlette.responses import StreamingResponse
+    from starlette.responses import JSONResponse, StreamingResponse
 
     from ploidy.stream import ProgressEvent, sse_format
 
+    owner = _resolve_stream_owner(request)
+    if _auth_is_enabled() and owner is None:
+        return JSONResponse(
+            {"error": "unauthorized"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     body = await request.json()
     if not isinstance(body, dict):
-        from starlette.responses import JSONResponse
-
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
 
     svc = await _init()
-    owner = _resolve_stream_owner(request)
 
     queue: _asyncio.Queue[ProgressEvent | None] = _asyncio.Queue()
 
@@ -282,6 +313,8 @@ async def _stream_debate(request):
                 context_documents=body.get("context_documents"),
                 context_sources=body.get("context_sources"),
                 blocked_sources=body.get("blocked_sources"),
+                target_lease=body.get("target_lease"),
+                allowed_sources=body.get("allowed_sources"),
                 fresh_role=body.get("fresh_role", "fresh"),
                 delivery_mode=body.get("delivery_mode", "none"),
                 pause_at=body.get("pause_at"),
@@ -316,31 +349,35 @@ async def _stream_debate(request):
                 yield sse_format(event)
         finally:
             # If the client disconnects mid-stream, cancel the worker
-            # so no token is wasted on output nobody is consuming.
+            # so no token is wasted on output nobody is consuming. Await it
+            # before closing the generator so service cancellation cleanup is
+            # complete when the disconnect boundary returns.
             if not worker.done():
                 worker.cancel()
+            try:
+                await worker
+            except _asyncio.CancelledError:
+                pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 def _resolve_stream_owner(request) -> str | None:
-    """Parse the Authorization header on the SSE route.
+    """Resolve the authenticated tenant attached by FastMCP middleware.
 
-    ``_current_owner()`` reads from FastMCP's auth context which is only
-    populated inside a registered tool. Our custom route runs outside
-    that context so we re-check the bearer manually against the same
-    token map.
+    FastMCP custom routes are not wrapped in its ``RequireAuthMiddleware``,
+    but the app-level bearer authentication middleware still records the
+    verified ``AccessToken`` on the ASGI scope. The route checks that token
+    itself so static and OAuth credentials follow the exact same verifier.
     """
-    if not _TOKEN_MAP:
+    scope = getattr(request, "scope", None)
+    if not isinstance(scope, dict):
         return None
-    auth = request.headers.get("authorization", "")
-    if not auth.lower().startswith("bearer "):
+    user = scope.get("user")
+    access_token = getattr(user, "access_token", None)
+    if access_token is None or "debate" not in access_token.scopes:
         return None
-    token = auth.split(" ", 1)[1].strip()
-    for candidate, tenant in _TOKEN_MAP.items():
-        if hmac.compare_digest(token.encode("utf-8"), candidate.encode("utf-8")):
-            return tenant
-    return None
+    return access_token.client_id
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +475,8 @@ async def debate(
     context_documents: list[str] | None = None,
     context_sources: list[str] | None = None,
     blocked_sources: list[str] | None = None,
+    target_lease: str | None = None,
+    allowed_sources: list[str] | None = None,
 ) -> dict:
     """Run a context-asymmetric debate in a single call.
 
@@ -445,8 +484,9 @@ async def debate(
 
     - ``auto`` (default): Ploidy generates both sides via the configured
       OpenAI-compatible API endpoint and returns the convergence result.
-      Requires PLOIDY_API_BASE_URL. HITL pause/resume available via
-      ``pause_at``; resume with the legacy ``debate_review`` tool.
+      Requires non-empty ``context_documents`` plus a configured API
+      endpoint. HITL pause/resume is available via ``pause_at``; resume
+      with the legacy ``debate_review`` tool.
     - ``solo``: you supply both positions (and optionally both challenges)
       and Ploidy persists + converges them. No external API key needed —
       the recommended single-terminal flow when the caller (e.g. Claude
@@ -475,11 +515,16 @@ async def debate(
         injection_mode: (auto) Context formatting mode.
         context_pct: (auto) Percentage of context to retain.
         language: (auto) Output language code.
-        deep_model / fresh_model: (auto) Per-side model overrides.
-        context_documents: Optional documents attached to the deep side.
+        deep_model / fresh_model: (auto) Model override. Supplying either
+            applies it to both sides; if both are supplied they must match.
+        context_documents: Documents attached only to the Deep side. Required
+            and non-empty in auto mode; optional provenance in solo mode.
         context_sources: Optional provenance labels, one per context document.
         blocked_sources: Optional strings that must not appear in source labels
             or context documents.
+        target_lease: Optional target identifier that pins this debate's scope.
+        allowed_sources: Optional source-label allowlist; defaults to target_lease
+            when a target lease is set.
 
     Returns:
         Convergence result dict, or paused state (auto + pause_at).
@@ -504,6 +549,8 @@ async def debate(
             context_documents=context_documents,
             context_sources=context_sources,
             blocked_sources=blocked_sources,
+            target_lease=target_lease,
+            allowed_sources=allowed_sources,
             deep_label=deep_label,
             fresh_label=fresh_label,
             tenant=owner or "global",
@@ -526,6 +573,8 @@ async def debate(
             context_documents=context_documents,
             context_sources=context_sources,
             blocked_sources=blocked_sources,
+            target_lease=target_lease,
+            allowed_sources=allowed_sources,
             fresh_role=fresh_role,
             delivery_mode=delivery_mode,
             pause_at=pause_at,
@@ -554,6 +603,8 @@ async def debate_start(
     context_documents: list[str] | None = None,
     context_sources: list[str] | None = None,
     blocked_sources: list[str] | None = None,
+    target_lease: str | None = None,
+    allowed_sources: list[str] | None = None,
 ) -> dict:
     """Begin a new debate session with a decision prompt.
 
@@ -567,6 +618,8 @@ async def debate_start(
         context_documents,
         context_sources=context_sources,
         blocked_sources=blocked_sources,
+        target_lease=target_lease,
+        allowed_sources=allowed_sources,
         tenant=owner or "global",
         owner_id=owner,
     )
@@ -683,6 +736,8 @@ async def debate_solo(
     context_documents: list[str] | None = None,
     context_sources: list[str] | None = None,
     blocked_sources: list[str] | None = None,
+    target_lease: str | None = None,
+    allowed_sources: list[str] | None = None,
     deep_label: str = "Deep",
     fresh_label: str = "Fresh",
 ) -> dict:
@@ -702,6 +757,8 @@ async def debate_solo(
         context_documents=context_documents,
         context_sources=context_sources,
         blocked_sources=blocked_sources,
+        target_lease=target_lease,
+        allowed_sources=allowed_sources,
         deep_label=deep_label,
         fresh_label=fresh_label,
         tenant=owner or "global",
@@ -719,6 +776,8 @@ async def debate_auto(
     context_documents: list[str] | None = None,
     context_sources: list[str] | None = None,
     blocked_sources: list[str] | None = None,
+    target_lease: str | None = None,
+    allowed_sources: list[str] | None = None,
     fresh_role: str = "fresh",
     delivery_mode: str = "none",
     pause_at: str | None = None,
@@ -733,9 +792,9 @@ async def debate_auto(
 ) -> dict:
     """Run a complete debate automatically in a single command.
 
-    Requires PLOIDY_API_BASE_URL to be configured. Generates positions
-    and challenges via an OpenAI-compatible endpoint, runs the protocol,
-    and returns the convergence result.
+    Requires non-empty ``context_documents`` and a configured API endpoint.
+    Generates positions and one independent challenge per seat with one
+    resolved model, runs the protocol, and returns the convergence result.
     """
     svc = await _init()
     owner = _current_owner()
@@ -744,6 +803,8 @@ async def debate_auto(
         context_documents=context_documents,
         context_sources=context_sources,
         blocked_sources=blocked_sources,
+        target_lease=target_lease,
+        allowed_sources=allowed_sources,
         fresh_role=fresh_role,
         delivery_mode=delivery_mode,
         pause_at=pause_at,

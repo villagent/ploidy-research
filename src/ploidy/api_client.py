@@ -85,6 +85,11 @@ def is_api_available() -> bool:
     return _API_BASE_URL is not None and _API_BASE_URL != ""
 
 
+def configured_model() -> str:
+    """Return the single configured model used by context-asymmetric runs."""
+    return _API_MODEL
+
+
 _cached_client = None
 
 
@@ -247,20 +252,27 @@ async def generate_experienced_position(
     context_documents: list[str] | None = None,
     effort: str = "high",
     model: str | None = None,
+    system_prompt: str | None = None,
 ) -> str:
-    """Generate an Experienced session position via API."""
+    """Generate an Experienced session position via API.
+
+    ``system_prompt`` carries injection-mode context supplied by the service.
+    ``context_documents`` remains supported for direct callers, but the two
+    mechanisms should not be used for the same context in one request.
+    """
     context_block = ""
     if context_documents:
         joined = "\n\n".join(context_documents)
         context_block = f"Project context documents:\n{joined}\n\n"
 
-    system = (
+    role_system = (
         "You are the experienced session in a structured debate. "
         "You have access to project-specific context that the other session may not see. "
         "Incorporate that context explicitly. List every bug, risk, or issue you can find. "
         "Be specific and technical. For each issue, classify your confidence as HIGH, "
         "MEDIUM, or LOW."
     )
+    system = f"{role_system}\n\n{system_prompt}" if system_prompt else role_system
     return await generate_response(
         prompt=f"{context_block}Debate prompt:\n{debate_prompt}",
         system_prompt=system,

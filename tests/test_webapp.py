@@ -27,24 +27,28 @@ def test_index_html_has_required_elements():
     assert "<title>Ploidy — live debate</title>" in html
     assert 'id="debate-form"' in html
     assert 'id="prompt"' in html
+    assert 'id="context"' in html
+    assert 'name="context"' in html
+    assert "context_documents: [context]" in html
     assert 'id="token"' in html
     # Points at the SSE endpoint, not some placeholder.
     assert "/v1/debate/stream" in html
-    # Marked is loaded from CDN so <details> blocks + markdown render.
-    assert "marked@12" in html
-    # LocalStorage persistence is the UX contract — surface it.
-    assert "localStorage" in html
+    # Model output is rendered as text, never through an HTML injection sink.
+    assert "pre.textContent = md" in html
+    assert "innerHTML" not in html
+    # Bearer credentials are memory-only and disappear on navigation.
+    assert "localStorage" not in html
 
 
 def test_index_html_is_self_contained():
-    """No external references beyond the CDN marked.js."""
+    """The zero-build UI has no external script or stylesheet dependency."""
     html = index_html()
     # No broken link placeholders.
     assert "TODO" not in html
     assert "{{" not in html
-    # Inline CSS + JS — no .css or .js file imports except marked.
+    # Inline CSS + JS only.
     assert html.count("<link rel") == 0
-    assert html.count("<script") == 2  # marked CDN + inline IIFE
+    assert html.count("<script") == 1
 
 
 async def test_web_route_serves_html():

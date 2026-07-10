@@ -3,14 +3,12 @@
 
 Served from the same FastMCP server so operators only need one
 deployment. Pointing a browser at the root URL gives a text input,
-bearer-token field (stored in localStorage when the server has a
-token map configured), and a progress panel driven by the existing
-``POST /v1/debate/stream`` SSE endpoint.
+an in-memory-only bearer-token field, and a progress panel driven by
+the existing ``POST /v1/debate/stream`` SSE endpoint.
 
 Intentionally zero-build: vanilla HTML + ``fetch`` stream parsing +
-``marked.js`` from a CDN. The output block renders the server's
-``rendered_markdown`` field verbatim so the collapsed ``<details>``
-UX matches every other Ploidy surface.
+The output block treats the server's ``rendered_markdown`` as text rather
+than HTML, because model output must never reach an ``innerHTML`` sink.
 """
 
 from __future__ import annotations
@@ -21,9 +19,6 @@ _HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ploidy — live debate</title>
-<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"
-        integrity="sha256-D5FeZO4AMl/kj4LaEakcO3kZyHTLq3c6nU4HYvcODAM="
-        crossorigin="anonymous"></script>
 <style>
   :root {
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
@@ -105,6 +100,11 @@ _HTML = r"""<!DOCTYPE html>
       placeholder="Should we rewrite the ingestion pipeline in Rust?"
       required></textarea>
 
+    <label for="context">Deep-only project context</label>
+    <textarea id="context" name="context"
+      placeholder="Paste architecture notes, code, incidents, or decisions visible only to Deep."
+      required></textarea>
+
     <div class="opts">
       <div>
         <label for="deep_n">Deep n</label>
@@ -133,7 +133,7 @@ _HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
-    <label for="token">Bearer token <small>(optional, stored locally)</small></label>
+    <label for="token">Bearer token <small>(optional, never stored)</small></label>
     <input id="token" name="token" type="password" autocomplete="off"
            placeholder="Only needed if the server configures PLOIDY_TOKENS">
 
@@ -166,10 +166,6 @@ _HTML = r"""<!DOCTYPE html>
   const result = document.getElementById('result');
   const submit = document.getElementById('submit');
   const tokenInput = document.getElementById('token');
-
-  // Restore any previously-entered token.
-  const saved = localStorage.getItem('ploidy_token');
-  if (saved) tokenInput.value = saved;
 
   const EMOJI = {
     phase_started: '📍',
@@ -204,8 +200,8 @@ _HTML = r"""<!DOCTYPE html>
   async function run(body, token) {
     progressPanel.classList.remove('hidden');
     resultPanel.classList.add('hidden');
-    progress.innerHTML = '';
-    result.innerHTML = '';
+    progress.replaceChildren();
+    result.replaceChildren();
 
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -251,7 +247,9 @@ _HTML = r"""<!DOCTYPE html>
 
         if (isEnd) {
           const md = data.rendered_markdown || '_(no rendered_markdown field — server is pre-v0.4.1)_';
-          result.innerHTML = window.marked.parse(md);
+          const pre = document.createElement('pre');
+          pre.textContent = md;
+          result.replaceChildren(pre);
           resultPanel.classList.remove('hidden');
         }
       }
@@ -261,11 +259,10 @@ _HTML = r"""<!DOCTYPE html>
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const prompt = form.prompt.value.trim();
-    if (!prompt) return;
+    const context = form.context.value.trim();
+    if (!prompt || !context) return;
 
     const token = tokenInput.value.trim();
-    if (token) localStorage.setItem('ploidy_token', token);
-    else localStorage.removeItem('ploidy_token');
 
     submit.disabled = true;
     submit.textContent = 'Running…';
@@ -273,6 +270,8 @@ _HTML = r"""<!DOCTYPE html>
       await run(
         {
           prompt,
+          context_documents: [context],
+          context_sources: ['web:deep-context'],
           deep_n: Number(form.deep_n.value),
           fresh_n: Number(form.fresh_n.value),
           effort: form.effort.value,
