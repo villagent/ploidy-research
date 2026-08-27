@@ -115,3 +115,7 @@ experiments/src/results/
 # The `!.claude/` negation above re-includes the whole agent dir; re-exclude
 # the worktree subdirectory so transient agent worktrees stay local.
 .claude/worktrees/
+
+# Codex agent local config + session-entry contract (local only)
+.codex/
+AGENTS.md
