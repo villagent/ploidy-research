@@ -399,7 +399,7 @@ def _call_codex(prompt: str, model: str, effort: str, system_prompt: str = None)
 
     full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
     outfile = tempfile.mktemp(suffix=".txt")
-    cmd = ["codex", "exec", "-o", outfile, "--full-auto"]
+    cmd = ["codex", "exec", "--output-last-message", outfile]
     if model and model != "codex-default":
         cmd.extend(["-m", model])
     cmd.append(full_prompt)

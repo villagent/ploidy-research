@@ -109,7 +109,7 @@ def call_codex(
 
     full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
     outfile = tempfile.mktemp(suffix=".txt")
-    cmd = ["codex", "exec", "-o", outfile, "--full-auto", full_prompt]
+    cmd = ["codex", "exec", "--output-last-message", outfile, full_prompt]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         raise RuntimeError(f"codex CLI error: {result.stderr.strip()}")

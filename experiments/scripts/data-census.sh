@@ -38,8 +38,9 @@ for d in os.listdir(CANONICAL):
             if "error" not in j:
                 cells += 1
                 mtimes.append(os.path.getmtime(fp))
-                by_model[j.get("model","?")] += 1
-                m, mod = j.get("method","?"), j.get("model","?")
+                mod = j.get("model") or j.get("subject_model") or "?"
+                by_model[mod] += 1
+                m = j.get("method","?")
                 dn, fn = j.get("deep_n",1), j.get("fresh_n",1)
                 if m == "ploidy" and mod == "claude-opus-4-7":
                     by_ploidy_level[(dn, fn)] += 1

@@ -61,7 +61,7 @@
 % Abstract
 % ============================================================
 \begin{abstract}
-Single-session LLM usage subjects critical decisions to stochastic prior lock-in: the model's first probabilistic response anchors all subsequent reasoning, and prompt-based mitigations have no statistically significant effect on this bias~\citep{feng2026anchoring}. We present Ploidy, a structured debate protocol between physically separate sessions of the same model with intentionally asymmetric context depths. The framework's primary contributions are conceptual rather than a single headline number: (i)~the distinction between \textbf{Event~A} (context asymmetry---sessions disagree because they have different information) and \textbf{Event~B} (stochastic variance---sessions with identical context disagree due to sampling randomness), which the \emph{ploidy level} (sessions per context depth) controls---confounded at 1n, separable at 2n+; (ii)~the \textbf{Context Asymmetry Spectrum} (Deep~$\to$~Semi-Fresh~$\to$~Fresh) crossed with passive vs.\ active delivery; (iii)~\textbf{context injection mode} (raw, memory, skills, system prompt, CLAUDE.md) as a novel experimental variable for debate efficacy; and (iv)~a \textbf{heterogeneous independence taxonomy} that distinguishes deterministic Fresh (rule-based static analysis) from probabilistic Fresh (zero-context LLM session). In 6 experiments spanning short- and long-context tasks, ploidy levels 1n--4n, four model families (Claude Opus~4.6, Sonnet~4.6, Gemini~3.1~Pro, GPT-5.4), five injection modes, and four languages---yielding 1{,}660 valid (task, run, method) triples---paired Wilcoxon signed-rank tests with Holm--Bonferroni correction support the following observations.
+Single-session LLM usage subjects critical decisions to stochastic prior lock-in: the model's first probabilistic response anchors all subsequent reasoning, and prompt-based mitigations have no statistically significant effect on this bias~\citep{feng2026anchoring}. We present Ploidy, a structured debate protocol between physically separate sessions of the same model with intentionally asymmetric context depths. The framework's primary contributions are conceptual rather than a single headline number: (i)~the distinction between \textbf{Event~A} (context asymmetry---sessions disagree because they have different information) and \textbf{Event~B} (stochastic variance---sessions with identical context disagree due to sampling randomness), which the \emph{ploidy level} (sessions per context depth) controls---confounded at 1n, separable at 2n+; (ii)~the \textbf{Context Asymmetry Spectrum} (Deep~$\to$~Semi-Fresh~$\to$~Fresh) crossed with passive vs.\ active delivery; (iii)~\textbf{context injection mode} (raw, memory, skills, system prompt, CLAUDE.md) as a novel experimental variable for debate efficacy; and (iv)~a \textbf{heterogeneous independence taxonomy} that distinguishes deterministic Fresh (rule-based static analysis) from probabilistic Fresh (zero-context LLM session). Across eight experiments---a six-experiment Phase~1 exploratory study (short- and long-context tasks, ploidy levels 1n--4n, five injection modes, four languages; 1{,}660 valid (task, run, method) triples, primarily on Claude Opus~4.6 with thinner cross-family probes on Sonnet~4.6, Gemini~3.1~Pro, and GPT-5.4) and a pre-registered Phase~2 confirmatory study on nine adversarial tasks (Claude Opus~4.7, Haiku~4.5, Gemini~3.1~Pro) plus a Cross-Challenge ablation---paired Wilcoxon signed-rank tests with Holm--Bonferroni correction support the following observations.
 
 \noindent (1)~The strongest empirical finding is an \emph{inversion} of our initial hypothesis: on the 5 code-review tasks where rule-based static analysis applies, deterministic Tool-Fresh significantly outperforms probabilistic Ploidy (mean $F1 = 0.590$ vs.\ $0.571$, Wilcoxon $p = 0.0098$, $n = 25$ paired comparisons across 5 injection modes $\times$ 5 runs) at one-third the token cost, and Tool-Fresh is stable across all five injection modes ($F1 = 0.559$--$0.617$) while Ploidy varies ($F1 = 0.540$--$0.597$). The source of independence---rule-based vs.\ context-deprived---matters more than its presence.
 
@@ -73,7 +73,11 @@ Single-session LLM usage subjects critical decisions to stochastic prior lock-in
 
 \noindent (5)~The remaining open cell---Ploidy~$>$~Single on long-context tasks---is the subject of a pre-registered 4th-sweep replication (\texttt{planning/decisions.md}, 2026-05-21 + 2026-05-27 amendments) whose falsification gates are jointly required on \emph{either} of two co-primary metrics (F1 and recall): $\Delta \bar{M}_{\text{Ploidy}-\text{Single}} \geq 0.030$ where $M \in \{F1, \text{recall}\}$, paired Cohen's $d \geq 0.30$, and Holm--Bonferroni $p_\text{corr} < 0.05$ on $n{=}5 \times 10$ long-context tasks at \texttt{effort=high}, \texttt{injection=raw}, \texttt{lang=en} on Claude Opus 4.7. Two further pre-registered gates harden the run against the known invalidators conceded in \S\ref{sec:limitations}: $\geq 30\%$ of the 10 tasks are drawn from public-record incident post-mortems (\texttt{experiments/src/tasks\_external.py}), and a Cohen's $\kappa \geq 0.40$ secondary-judge agreement gate (\texttt{experiments/src/run\_secondary\_judge.py}) on a 5-task subset re-evaluated by a non-Claude model decides whether the primary judge measurement is trustworthy. A context-length gradient (short $\approx 500$ / medium $\approx 1000$ / long~$=$~full tokens) crosses the 10 base tasks at three lengths to locate the H2 entrenchment threshold (\texttt{tasks\_gradient.py}). Any single gate failing means the data does not support H2 in its current form and the paper is revised accordingly.
 
-\noindent We note candidly that the hypothesized Ploidy advantage over Single Session was not confirmed at corrected significance in our experiments. The framework's value lies in defining the experimental design space---context depth, injection mode, independence source, ploidy level---that future work can populate with larger task sets, and in identifying that deterministic and probabilistic Fresh sessions occupy complementary problem domains rather than competing on a single axis. The intersection of intentional context asymmetry, structured cross-session debate, injection mechanism as experimental variable, ploidy-level stochastic sampling, and heterogeneous independence taxonomy has, to our knowledge, no prior publications as of April~2026.
+\noindent (6)~\textbf{Phase 2 (pre-registered confirmatory).} The Phase~1 nulls above motivated a redesign with explicit bias-vector tasks: nine adversarial tasks across three patterns (authority, ownership, framing). On Opus~4.7, $k{\geq}15$ replications per cell, primary DV = union recall: $H_1$ (ploidy(2n) $>$ single) holds on 9 of 9 tasks, $\Delta = +0.144$, $d = +1.58$, Holm $p_\text{corr} = 0.0059$; $H_4$ (Friedman over 4 methods) holds at $p_\text{corr} = 0.0006$; $H_{10}$ (a heterogeneous-Fresh role-prefix variant) is \emph{strongly rejected} ($\Delta = -0.024$, $d = -1.00$). $H_1$ replicates on Haiku~4.5 ($\Delta = +0.130$, Holm $p_\text{corr} = 0.031$) and directionally on Gemini~3.1~Pro ($n{=}3$ paired, 3/3 positive). An anti-circularity gate (Cohen's $\kappa \geq 0.60$ on a 10\% sub-sample re-judged by gemini-2.5-pro) passes at $\kappa = 0.705$.
+
+\noindent (7)~\textbf{Cross-Challenge ablation.} A pre-registered ablation (\texttt{ploidy\_no\_challenge}: Position $\to$ Convergence, the two cross-challenge calls removed) shows that $\sim89\%$ of the Phase~2 Ploidy lift over Single is delivered by the Position phase alone (NC~$-$~Single $= +0.128$, $d = +1.34$, Wilcoxon $p = 0.0078$); the cross-Challenge phase contributes only $+0.016$ on union recall, indistinguishable from zero ($p = 0.23$). The protocol's named mechanism (Fresh-challenges-Deep / Deep-challenges-Fresh) is therefore null at this DV, and the asymmetric-Position-aggregates-entering-Convergence is where the benefit comes from---a $\sim40\%$ compute reduction is available with negligible recall cost.
+
+\noindent The framework's value lies in defining the experimental design space---context depth, injection mode, independence source, ploidy level---and in producing a pre-registered confirmatory result on a deliberately bias-loaded task pool while honestly reporting the negative ablation finding (cross-Challenge phase null). The intersection of intentional context asymmetry, structured cross-session debate, injection mechanism as experimental variable, ploidy-level stochastic sampling, and heterogeneous independence taxonomy has, to our knowledge, no prior publications as of 2026-05-29.
 \end{abstract}
 
 % ============================================================
@@ -102,7 +106,7 @@ This pattern has a precise analogue in the history of science. Planck observed t
 
 The only computational intervention with empirical support for this problem is physical session separation. Cross-Context Review (CCR)~\citep{song2026ccr}, published concurrently with and independently of this work, demonstrated that a fresh session reviewing an artifact produced by a deep session achieves F1=28.6\% on error detection versus 24.6\% for same-session review ($p=0.008$). CCR validates the core premise that context separation improves review quality. However, CCR is unidirectional---the fresh session reviews but does not debate. Song's follow-up, Dynamic CCR (D-CCR)~\citep{song2026dccr}, tested multi-turn extensions of CCR and found that additional review rounds \emph{degrade} performance: single-pass CCR (F1=0.376) significantly outperformed all multi-turn variants ($p<0.001$), with later rounds introducing false positive pressure and ``Review Target Drift'' where reviewers critique the conversation rather than the artifact. D-CCR's negative result supports our design choice of structured bidirectional debate over iterated unidirectional review---the problem is not insufficient rounds but insufficient \emph{structure} in how disagreements are processed.
 
-We extend CCR from unidirectional review to \textbf{bidirectional structured debate} and introduce the \textbf{Context Asymmetry Spectrum}---a continuum from full context (Deep) through compressed context (Semi-Fresh) to zero context (Fresh). This spectrum recognizes that the optimal information state for a challenger may be neither complete ignorance nor full knowledge, but an intermediate point analogous to the ``experienced outsider'' who brings domain awareness without institutional entrenchment.
+Ploidy was developed independently from practical experience with context entrenchment in long-running coding sessions, not derived from CCR or any prior debate framework. Where CCR performs unidirectional review (a fresh session reviews a deep session's artifact), Ploidy uses \textbf{bidirectional structured debate} and introduces the \textbf{Context Asymmetry Spectrum}---a continuum from full context (Deep) through compressed context (Semi-Fresh) to zero context (Fresh). This spectrum recognizes that the optimal information state for a challenger may be neither complete ignorance nor full knowledge, but an intermediate point analogous to the ``experienced outsider'' who brings domain awareness without institutional entrenchment.
 
 \paragraph{Two independent phenomena.} We identify that context asymmetry (Event~A) and stochastic variance (Event~B) are independent events requiring different interventions. A haploid (1n) debate---Deep(1)$\times$Fresh(1)---addresses Event~A but samples only one point from each distribution. Diploid (2n) and higher address both simultaneously: context asymmetry \emph{between} groups, stochastic sampling \emph{within} groups.
 
@@ -138,7 +142,7 @@ ColMAD~\citep{chen2025colmad} reframes debate from competitive zero-sum to colla
 
 SR-DCR~\citep{srdcr2025} introduced asymmetric context verification debate (ACVD): a context-defending agent debates a context-deprived critic. On GPT-3.5, this achieved 62.7\% accuracy (+3.4pp over naive debate). AceMAD~\citep{liu2026acemad} proved that asymmetric cognitive potential creates submartingale drift toward truth, formally breaking the martingale curse. We note that Ploidy's current single-round design does not satisfy the multi-round conditions required for AceMAD's submartingale proof; whether a multi-round extension would achieve this remains an open question (\S\ref{sec:conclusion}).
 
-AceMAD provides the theoretical foundation demonstrating \emph{that} asymmetry works. Ploidy serves as empirical validation and system-level implementation: answering the architectural questions of \emph{what form} of context asymmetry to inject (the Context Asymmetry Spectrum), \emph{how} to deliver it (injection mode), and \emph{how many} sessions are needed to separate structural bias from stochastic noise (ploidy level). We note that Ploidy was developed independently and concurrently with AceMAD, motivated by practical experience with context entrenchment in long-running coding sessions rather than formal game-theoretic analysis. The convergence of an empirical practitioner-driven approach and a theoretical proof-driven approach on the same core insight---that intentional information asymmetry breaks anchoring---strengthens the case for both.
+AceMAD, concurrent and independent, gives a game-theoretic proof that asymmetric cognitive potential drifts toward truth. Ploidy was developed independently from practical experience with context entrenchment in long-running coding sessions---not from AceMAD's analysis, which we became aware of only at writing time, nor from any game-theoretic motivation. We therefore do not claim that AceMAD grounds Ploidy or that Ploidy validates AceMAD; we report them as independent arrivals at a related insight (that intentional information asymmetry breaks anchoring), one theoretical and one empirical/architectural. Ploidy's distinct contribution is architectural: \emph{what form} of context asymmetry to inject (the Context Asymmetry Spectrum), \emph{how} to deliver it (injection mode), and \emph{how many} sessions separate structural bias from stochastic noise (ploidy level).
 
 \paragraph{Retrieval-side asymmetry analogue.} Courtroom-Style Multi-Agent Debate with Progressive RAG and Role-Switching~\citep{courtroom2026rag} (concurrent, March 2026) attacks the same Echo Chamber problem from the retrieval side: stance-conditioned queries generate distinct evidence pools optimised for supporting and challenging the claim, producing adversarially balanced retrieval. Ploidy and the Courtroom-Style protocol therefore operate on \emph{orthogonal} axes of asymmetry --- Ploidy varies \emph{context depth} between sessions of the same model, the Courtroom protocol varies \emph{retrieved evidence} between roles within a session. Both can compose: a Courtroom-style retrieval policy could feed a Ploidy Deep session while a context-deprived Fresh session reads only the prompt. We leave this composition as future work.
 
@@ -211,6 +215,69 @@ Claude Managed Agents~\citep{anthropic2026managedagents} and similar systems (Cr
 More recently, production systems have converged on context isolation as a design primitive. Claude Code Agent Teams~\citep{anthropic2026agentteams} gives each teammate an independent context window with coordination through shared task lists and direct messaging. OpenAI Codex runs parallel agents in sandboxed environments. Google Gemini Code Assist supports multi-agent workflows with session separation. Anthropic's desktop redesign~\citep{anthropic2026desktopredesign} further introduces a side-chat mechanism with one-way context flow---the branch reads from the main thread but cannot write back, a pattern structurally analogous to Ploidy's Deep$\to$Fresh information delivery.
 
 This convergence validates the premise that context separation matters for multi-agent quality. However, these systems isolate context \emph{incidentally}---as a side effect of task parallelism---rather than \emph{intentionally} as a mechanism for bias reduction. Agent Teams teammates load the same project context (persistent files, MCP servers, codebase) and coordinate toward task completion, not verification. The isolation is architectural (preventing interference) rather than epistemological (ensuring independent evaluation). No production system provides (1)~controlled variation of context depth across an asymmetry spectrum, (2)~a structured debate protocol with typed semantic actions for processing disagreements, or (3)~causal decomposition of context-induced bias (Event~A) from stochastic variance (Event~B). Ploidy implements the orthogonal strategy: cooperative verification, where the same problem is analyzed from intentionally different information states. The goal is not more output but different perspectives---disagreements are the primary signal, not a failure mode.
+
+\subsection{Commercial Multi-Agent Frameworks (2026-05-29 snapshot)}
+\label{sec:industry}
+
+To position Ploidy against the dominant industry framing, we
+surveyed the official documentation of six major commercial
+multi-agent platforms as of 2026-05-29. Three architectural
+patterns emerge:
+
+\textbf{Orchestration / task division.} OpenAI's Agents
+SDK~\citep{openai2026agentsdk} provides ``Handoffs'' (explicit
+agent-to-agent transfer) and manager-style orchestration over a
+sandbox-isolated execution environment; the
+sandbox provides filesystem isolation, not
+context-asymmetric debate. Microsoft's Agent Framework
+v1.0~\citep{microsoft2026agentframework} (updated 2026-04-20)
+exposes Agents and graph-based Workflows with type-safe routing,
+checkpointing, and human-in-the-loop primitives; the framing is
+production engineering---telemetry, state management,
+middleware. AWS Bedrock Multi-Agent
+Collaboration~\citep{aws2026bedrockmultiagent} (GA 2025, enhanced
+2026) implements a hierarchical supervisor-and-collaborators
+pattern with task-routing modes. None of these positions
+multi-agent as an anti-anchoring mechanism; none decomposes
+Event~A from Event~B.
+
+\textbf{Provider interoperability.} Google's Agent-to-Agent
+Protocol~\citep{google2025a2a} (announced 2025-04-09, moved to
+production at Cloud Next 2026) defines a cross-vendor
+communication protocol that 150+ organisations have committed
+to. Apple is expected to announce a Siri Extensions
+system~\citep{wwdc2026preview} at WWDC 2026 (2026-06-08) that
+exposes third-party AI providers (Claude, Gemini, ChatGPT) as
+alternative Siri backends. These are interoperability /
+distribution patterns; bias-isolation is not a stated goal.
+
+\textbf{Parallel investigation.} Anthropic's Agent
+Teams~\citep{anthropic2026agentteams} is the closest commercial
+analogue to Ploidy and the one that explicitly acknowledges the
+anchoring problem. The official documentation states:
+``Sequential investigation suffers from anchoring: once one
+theory is explored, subsequent investigation is biased toward
+it. With multiple independent investigators actively trying to
+disprove each other, the theory that survives is much more
+likely to be the actual root cause.'' This is the same
+diagnosis Ploidy starts from. But Agent Teams' implementation
+keeps the architecture symmetric: each teammate loads the same
+project context (CLAUDE.md, MCP servers, skills); the
+lead's conversation history does not carry over, but the
+\emph{project context}---which is where the anchoring vector
+lives---does. There is no structured Position~$\to$~Challenge~$\to$~Convergence
+phase machine, no quantitative Event~A / Event~B
+decomposition, no Context Asymmetry Spectrum, and no
+ablation isolating where the parallel investigation's value
+comes from. Ploidy is the natural next step on Anthropic's own
+diagnosis: asymmetric context, structured phases, quantified
+mechanism (\S\ref{sec:exp7-adversarial}--\S\ref{sec:exp8-ablation}).
+
+\textbf{Summary.} As of 2026-05-29, no commercial multi-agent
+framework positions multi-agent as a bias-reduction mechanism
+with a quantified decomposition of context-induced from
+stochastic variance. Ploidy occupies an empty slot in this
+landscape.
 
 % ============================================================
 \section{The Ploidy Protocol}
@@ -798,6 +865,193 @@ max  & 3.5/5 & 3.0/5 & 0.475 & 0.482 \\
 
 In our pilot observations, effort was not monotonically beneficial. The averaged results showed max effort producing the lowest recall for both methods (Single~3.5/5, Ploidy~3.0/5). However, per-task analysis reveals high variance: on individual runs, Single at max effort achieved 5/5 on some tasks---the highest recall observed for Single in this sweep. The averaged degradation at max effort may be driven by specific task--effort interactions rather than a uniform overthinking effect. Effort=low matched effort=high on recall (4.5/5) at roughly half the compute time. Ploidy outperformed Single on F1 only at effort=high, suggesting the effort~$\times$~method interaction may be non-trivial but is insufficiently sampled: single-run averages over 2 tasks cannot distinguish genuine interaction effects from stochastic variance.
 
+\subsection{Experiment 7: Phase 2 Adversarial Confirmatory (AD1)}
+\label{sec:exp7-adversarial}
+
+Experiments~1--6 above are the Phase~1 exploratory pilot (spec-v2,
+\texttt{planning/decisions.md} 2026-04-23). The headline finding from that
+pilot was honest: on the benign long-context task pool, Ploidy is
+statistically indistinguishable from Single on union recall
+($\Delta = -0.001$, $p_\text{corr} = 1.00$, $N = 420$), and on
+F1 the gradient sweep at \texttt{effort=high lang=en injection=raw}
+on Opus~4.7 shows a small negative paired delta. The
+\emph{Context Asymmetry Threshold Hypothesis} (\S\ref{sec:threshold})
+predicted this null: context asymmetry should help only when the
+context carries an explicit bias-vector for Fresh's outsider
+perspective to challenge. Benign long-context tasks have no such
+vector.
+
+Phase~2 (spec-v3, 2026-04-30) operationalises the bias-vector
+prediction by introducing nine \textbf{adversarial} tasks, three each
+of three patterns: \textbf{authority} (VP / CTO / lead-imposed bias),
+\textbf{ownership} (system-author defence), and \textbf{framing}
+(mid-migration / scale-mismatch / early-adopter narratives). Each
+task plants explicit bias signals in the context that a context-blind
+reviewer (Fresh) would not inherit. Ground truth includes both
+technical issues and items requiring the planted bias to be
+challenged. The pre-registered primary family for Phase~2 on
+Opus~4.7 is $\{H_1, H_3, H_4, H_6, H_{10}\}$ (Holm--Bonferroni, $\alpha=0.05$);
+on Haiku~4.5 and Gemini~3.1~Pro the family is $\{H_1, H_3\}$ as separate
+Holm families per model (spec-v3 \S6, S11 extension).
+
+\paragraph{AD1 Opus 4.7 results.} Per-task means on union recall
+across $k \geq 15$ replications per (task, method) cell:
+
+\begin{table}[t]
+\centering
+\caption{Phase 2 AD1 (Opus 4.7, 9 adversarial tasks): per-task recall means and paired tests on the primary family. Methods: ploidy(2n)~=~Deep$\times2$+Fresh$\times2$+2 challenges+convergence; stoch4~=~stochastic\_n with $n=4$ same-context sessions; SC5~=~self-consistency 5-vote.}
+\label{tab:ad1-opus}
+\begin{tabular}{l c c c c}
+\toprule
+Hypothesis & Test & Raw $p$ & Holm $p$ & Cohen's $d$ \\
+\midrule
+$H_4$ (4-method Friedman) & Friedman $\chi^2 = 20.25$ & 0.0002 & \textbf{0.0006}\,*** & --- \\
+$H_1$ (ploidy(2n) $>$ single) & sign 9/0, Wilcoxon & 0.0020 & \textbf{0.0059}\,** & +1.58 \\
+$H_3$ (ploidy(2n) $\geq$ SC5) & sign 8/1, Wilcoxon & 0.0371 & 0.0742 & +0.65 \\
+$H_{10}$ (ploidy\_alt $>$ ploidy) & sign 1/7, Wilcoxon & 0.9922 & 0.9922 & $-$1.00 \\
+$H_{1,\text{null}}$ (ploidy(2n) $>$ stoch4) & sign 5/2, Wilcoxon & 0.531 & --- & $-$0.19 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+$H_1$ and $H_4$ clear the corrected significance bar with large
+effects. $H_3$ shows uniform direction (8 of 9 tasks favour Ploidy)
+but Holm penalisation against a four-test family keeps it
+$p_\text{corr} = 0.074$; we report this as a directional finding,
+not corrected-significant. $H_{10}$ \emph{strongly rejects} the
+hypothesis that a heterogeneous Fresh frame (role prefixes:
+``security auditor'', ``SRE on incident call'', ``finance lead'')
+outperforms the zero-context Fresh: ploidy\_alt scores
+\emph{lower} than ploidy on 7 of 9 tasks, with $d = -1.00$. The
+role-frame prefix appears to substitute for the no-context
+condition rather than augment it. $H_{1,\text{null}}$ is the most
+interesting null: on union recall, ploidy(2n) and stochastic\_n
+with 4 same-context sessions are statistically indistinguishable.
+The implication---that context asymmetry's recall benefit may not
+separate cleanly from same-context resampling on this DV---is
+discussed under §\ref{sec:exp8-ablation} and §\ref{sec:mechanism-revised}.
+
+\paragraph{Cross-vendor replication.} On Haiku~4.5, $H_1$ replicates:
+ploidy(2n) $>$ single on 6 of 7 tasks, Wilcoxon $p = 0.016$,
+Holm $p = 0.031$, $d = +0.89$. On Gemini~3.1~Pro the AD1 sweep was
+limited to 3 tasks (one per pattern; spec-v3 §3.2 ``random 3 per
+pattern'') because the public Gemini~CLI is scheduled for sunset
+on 2026-06-18 for free / personal tier
+users.\footnote{Google Developers Blog, 2026-05-20: ``An important
+update: Transitioning Gemini CLI to Antigravity CLI.''
+\url{https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/}.
+Enterprise tier continues to support the same CLI.} With $n=3$ paired
+the formal sign test is underpowered (sign $p = 0.125$) but the
+direction is unanimous (ploidy $>$ single on all 3 Gemini tasks,
+mean $\Delta = +0.133$).
+
+\paragraph{Anti-circularity gate (AD2 $\kappa$).} A 10\% random
+sub-sample of AD1 ploidy(2n) Opus cells ($n=20$) was re-judged by
+\texttt{gemini-2.5-pro} as an independent secondary judge. Cohen's
+$\kappa$ on per-issue verdicts \{FOUND, PARTIAL, MISSED\} was
+\textbf{0.705}, clearing the pre-registered spec-v3 §7.4 threshold
+($\kappa \geq 0.60$). The Opus-as-primary-judge measurements
+underlying Table~\ref{tab:ad1-opus} are therefore not invalidated
+by judge bias at this gate.
+
+\paragraph{H\textsubscript{6} pattern direction reversed.} The
+pre-registered pattern effect (spec-v3 §6 $H_6$) predicted that the
+ploidy~$-$~single delta would be larger on
+\textbf{authority~+~ownership} patterns than on \textbf{framing}.
+The observed direction is the reverse: framing
+($\bar\Delta = +0.172$) $>$ ownership ($+0.154$) $>$ authority
+($+0.105$). Mann--Whitney on $\text{auth}\cup\text{own}$ vs framing
+$p = 0.64$ (not significant in either direction at $n=3$ per pattern).
+One plausible mechanism is that framing tasks (mid-migration,
+scale-mismatch, early-adopter narratives) generate a stronger
+\emph{narrative momentum} in Deep---an integrated story the
+context-blind Fresh seat is positioned to puncture---whereas
+authority bias is more locally surfaced and Deep can recognise it
+without Fresh's help. This is a post-hoc interpretation, reported as
+an exploratory observation per spec-v3's amendment policy.
+
+\subsection{Experiment 8: Cross-Challenge Ablation}
+\label{sec:exp8-ablation}
+
+Experiment 7 establishes that ploidy(2n) lifts recall over Single
+on adversarial tasks ($+0.144$, Holm $p = 0.0059$). The
+\emph{mechanism}, on the original spec-v3 framing, was the
+Position~$\to$~Challenge~$\to$~Convergence three-phase protocol:
+two Deep sessions and two Fresh sessions write
+positions independently; each side then \emph{challenges} the
+other's positions; finally Convergence reconciles.
+
+To isolate which phase produces the recall lift, we ran an ablation
+variant \texttt{ploidy\_no\_challenge}: identical Position phase
+(2~Deep + 2~Fresh, same prompts and contexts), but \emph{the two
+cross-challenge calls are removed} and Convergence reads only the
+two Position aggregates. 90~cells: 9 adversarial tasks $\times$
+10 reps on Opus~4.7 at the same effort/lang/injection settings as
+AD1. The Convergence prompt is identical to vanilla Ploidy except
+that the two Challenge sections in the prompt are absent.
+
+\begin{table}[t]
+\centering
+\caption{Cross-Challenge ablation on Opus 4.7 adversarial tasks. NC = ploidy\_no\_challenge. Per-task recall means; the three rightmost columns isolate the contribution of each protocol phase.}
+\label{tab:cross-challenge}
+\small
+\begin{tabular}{l c c c c c c}
+\toprule
+& \multicolumn{3}{c}{Per-task recall mean} & \multicolumn{3}{c}{Paired tests ($n{=}9$)} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+& Ploidy & NC & Single & mean $\Delta$ & $d_\text{paired}$ & Wilcoxon $p$ \\
+\midrule
+NC $-$ Single (no-challenge vs.\ baseline) & --- & --- & --- & \textbf{+0.128} & \textbf{+1.34} & \textbf{0.0078}\,** \\
+Ploidy $-$ NC (challenge phase contribution) & --- & --- & --- & +0.016 & +0.41 & 0.23 (ns) \\
+Ploidy $-$ Single (sanity) & --- & --- & --- & +0.144 & +1.58 & 0.0020 \\
+\midrule
+Aggregate across 9 tasks & 0.958 & 0.943 & 0.815 & & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The decomposition is the principal finding of Experiment 8:
+
+\begin{itemize}
+  \item The total Ploidy lift over Single is $\Delta = +0.144$.
+  \item Removing the Challenge phase removes only $+0.016$
+        ($\approx 11\%$ of the total lift), and the Ploidy~$-$~NC
+        comparison is not statistically distinguishable from zero
+        (Wilcoxon two-sided $p = 0.23$, paired signs 4/4).
+  \item The Position-diversity contribution
+        (NC~$-$~Single) is $+0.128$, $d = +1.34$, $p = 0.0078$:
+        roughly $89\%$ of the Ploidy lift is delivered by the
+        Position phase alone, without any cross-challenge.
+\end{itemize}
+
+\paragraph{Mechanism revised.}
+\label{sec:mechanism-revised}
+The cross-challenge calls are the most expensive part of the
+protocol per LLM call (each must process the other side's full
+aggregate in its prompt) and were positioned in the design as
+the anti-anchoring intervention. The ablation shows they are
+essentially redundant under union recall: Convergence reading
+two Position aggregates---one written under full context, one
+under zero context---is itself sufficient to surface roughly
+$+0.128$ of the $+0.144$ recall benefit. The mechanism
+\emph{is} the asymmetric Position aggregates entering
+Convergence's prompt; the explicit Challenge phase, on this DV,
+is not where the lift comes from. We retain the Challenge phase
+in the canonical protocol for two reasons. First, the
+$+0.016$ residual is small but in the predicted direction.
+Second, Challenge may carry value on DVs not measured here
+(precision under contested findings, qualitative review
+structure, calibration of confidence); we do not claim Challenge
+is wasted, only that its contribution to union recall is null.
+
+\paragraph{Cost-implication.}
+Position $\to$ Convergence (skipping Challenge) is a
+$\sim 40\%$ compute reduction (7 calls $\to$ 5 calls at 2n) with
+no statistically detectable recall cost. We report this as a
+practical optimisation under spec-v3's cost-per-recall reporting
+(§\ref{sec:experiments} preserved here as descriptive, $H_9$
+deferred to Stage~C).
+
 \subsection{Aggregate Paired Statistical Analysis}
 \label{sec:aggregate-stats}
 
@@ -887,6 +1141,33 @@ The null result on short-context tasks (Experiment~1) is not a failure of the me
 \paragraph{Anti-circularity and judge-validation gates.} Two further pre-registered gates harden the replication against the two known invalidators already conceded in \S\ref{sec:limitations}. First, at least 3 of the 10 long-context tasks ($\geq 30\%$) are drawn from public-record incident post-mortems / SEC filings (\texttt{experiments/src/tasks\_external.py}: GitLab 2017-01-31 db outage, GitHub 2018-10-21 MySQL topology, Knight Capital 2012 SMARS deploy) rather than author-designed; ground-truth issue lists are taken from the post-incident analyses themselves rather than from author opinion. Second, a 5-task subset of the same run is re-evaluated by a second judge model (Gemini~3.1~Pro or GPT-5.4, chosen at script-invocation time, not at result-inspection time) via \texttt{experiments/src/run\_secondary\_judge.py}, and Cohen's $\kappa$ is reported on the per-issue \{\textsc{found}, \textsc{partial}, \textsc{missed}\} verdicts. A $\kappa < 0.40$ result invalidates the H2 verdict regardless of the three gates above: the experiment is then reported as \emph{judge-invalid} until cross-judge agreement is re-tested.
 
 \paragraph{Context-length gradient.} To convert H2's qualitative "entrenchment threshold" into a numeric cutoff, the 10 base tasks are also evaluated at three length tiers each (\texttt{experiments/src/tasks\_gradient.py}): \emph{short} ($\approx 500$ tokens), \emph{medium} ($\approx 1000$ tokens), and \emph{long} (full $\approx 2000$+ tokens). The falsification triple is evaluated on each tier independently, and reported as "supported at \emph{long}, not at \emph{medium}, not at \emph{short}" --- the smallest tier at which the triple reproduces \emph{is} the empirical estimate of the threshold predicted by Table~\ref{tab:threshold}. This replaces the qualitative claim with a measurement.
+
+\paragraph{H2 outcome and the Phase 2 reframe.} The
+4th-sweep gradient replication on Opus 4.7 ($n{=}5 \times 30$ task
+variants, 450 valid cells) returned \emph{null} on the H2 falsification
+triple: on the union-recall co-primary metric the ploidy(2n) $-$
+single delta is essentially zero across all three length tiers (short
+$+0.010$, medium $-0.004$, long $-0.005$). On the F1 co-primary, the
+delta is small and negative ($-0.04$ to $-0.09$); investigation
+attributes this to F1's precision penalty on Ploidy's higher
+finding count (the supplementary F1\textsuperscript{*} metric, which excludes
+bonus findings from the precision denominator, recovers the
+null---neither metric supports Ploidy nor falsifies it at the
+pre-registered gate). The secondary-judge $\kappa$ gate on this
+sweep returned $\kappa = 0.677$ (valid). The honest reading is
+that H2's original framing---\emph{context asymmetry helps when
+context is long enough}---is too weak. Length alone does not produce
+an exploitable bias-vector for Fresh. Phase~2's adversarial task
+pool (\S\ref{sec:exp7-adversarial}) is the empirically validated
+boundary condition: context asymmetry produces measurable recall
+gains only when the context carries an explicit bias-vector
+(authority, ownership, framing narratives), not merely length.
+The threshold is therefore \emph{not} a function of
+length; it is a function of \emph{whether the context anchors a
+specific judgment that the Fresh seat is positioned to challenge}.
+The Phase~2 AD1 result on recall ($\Delta = +0.144$, Holm
+$p_\text{corr} = 0.0059$) supports this reframed hypothesis at
+corrected significance.
 
 \subsection{Minimum Capability Threshold}
 \label{sec:capability-threshold}
@@ -1110,6 +1391,11 @@ This pilot study has significant limitations that bound the strength of all clai
   % a separate follow-up sweep — out of scope for the H2 falsification.
   \item \textbf{Effort sweep limited}: Effort sweep (\S\ref{sec:effort-sweep}) used 1n ploidy only. The effort~$\times$~ploidy~$\times$~injection three-way interaction is unmeasured.
   \item \textbf{English-only evaluation}: All experiments and ground truth are in English. Localized responses in other languages may exhibit different anchoring dynamics and information loss patterns (\S\ref{sec:language}).
+  \item \textbf{$H_{10}$ (heterogeneous Fresh) strongly rejected}: The pre-registered spec-v3 prediction that role-prefixed Fresh sessions (\texttt{ploidy\_alt}: security auditor / SRE / finance lead) would surface more findings than the zero-context Fresh was \emph{falsified at $d = -1.00$} (\S\ref{sec:exp7-adversarial}). The role prefix appears to substitute for the no-context condition rather than augment it. Future heterogeneous-Fresh designs need a mechanism for combining role and context-blindness rather than replacing one with the other.
+  \item \textbf{$H_6$ pattern direction reversed}: The spec-v3 prediction (authority+ownership $>$ framing) failed; the observed ordering is framing $>$ ownership $>$ authority (Mann--Whitney $p = 0.64$, ns). The post-hoc explanation (narrative momentum in framing tasks) is a plausible mechanism but was not pre-registered.
+  \item \textbf{$H_1$ null on recall vs.\ Stochastic-N(4)}: On adversarial union recall, ploidy(2n) and stochastic\_n(4 same-context sessions) are statistically indistinguishable ($\Delta = -0.008$, $p = 0.53$). The cleanest separation of Event~A from Event~B may require a per-session DV (the keyword-approximation \texttt{fresh\_exclusive\_count\_raw} showed 1.0\% Fresh contribution on adversarial vs.\ 5.7\% on benign Phase~1, but the corresponding LLM-judged re-scoring failed mid-run on a Gemini quota cap and is queued for Opus re-judge).
+  \item \textbf{Cross-Challenge phase null}: The pre-registered Position $\to$ Challenge $\to$ Convergence three-phase protocol's Challenge phase contributes only $+0.016$ of the $+0.144$ Ploidy lift (\S\ref{sec:exp8-ablation}). We retain Challenge in the canonical protocol but acknowledge that its value at the union-recall DV is null; whether it contributes on precision, calibration, or qualitative DVs is unmeasured.
+  \item \textbf{Cross-vendor sweep bounded by Gemini CLI sunset}: AD1-gemini covers 3 of 9 tasks; the Gemini~CLI is sunset for free / personal tier users on 2026-06-18.\footnote{Google Developers Blog, ``Transitioning Gemini CLI to Antigravity CLI'', 2026-05-20.} Replicating Gemini results on the full 9-task pool after 2026-06-18 requires either the Gemini API or migration to Antigravity~CLI.
 \end{itemize}
 
 \subsection{Compression Bias in Semi-Fresh Sessions}
@@ -1292,7 +1578,11 @@ We presented Ploidy, a protocol for structured debate between same-model session
   \item \textbf{Intra-session multi-agent is not context isolation.} Subagent spawning within a single session accumulates context in the parent, negating Fresh independence---observed directly during this research.
 \end{enumerate}
 
-The intersection of intentional context asymmetry, injection mode as variable, heterogeneous independence sources, and ploidy-level stochastic sampling has no prior publications as of April~2026. We note candidly that the hypothesized Ploidy advantage over Single was not confirmed at statistical significance in our experiments. The framework's value lies in defining the experimental design space---context depth, injection mode, independence source, ploidy level---that future work can populate with larger task sets.
+The intersection of intentional context asymmetry, injection mode as variable, heterogeneous independence sources, and ploidy-level stochastic sampling has no prior publications as of 2026-05-29 (\S\ref{sec:industry}). The Phase~1 nulls above are the honest exploratory result; the Phase~2 confirmatory result on Opus 4.7---ploidy(2n) $>$ single on adversarial tasks at Holm $p_\text{corr} = 0.0059$ ($d = +1.58$), replicated on Haiku 4.5 (Holm $p_\text{corr} = 0.031$, $d = +0.89$) and directionally on Gemini 3.1 Pro (3 of 3 positive)---validates the reframed hypothesis that context asymmetry produces measurable recall gains when the context carries an explicit bias-vector for the Fresh seat to challenge, and not merely when context is long.
+
+\paragraph{Mechanism: the cross-Challenge calls are null on union recall.} The pre-registered three-phase protocol (Position $\to$ Challenge $\to$ Convergence) was designed around the assumption that Challenge---Deep and Fresh explicitly disputing each other's positions---is where Ploidy's recall benefit originates. The Cross-Challenge ablation (\S\ref{sec:exp8-ablation}) rejects this: removing Challenge removes only $+0.016$ of the $+0.144$ Ploidy lift over Single ($p = 0.23$, indistinguishable from zero), while Position alone delivers $+0.128$ ($d = +1.34$, $p = 0.0078$). The mechanism is the asymmetric Position aggregates entering Convergence's prompt; the explicit cross-challenge is empirically redundant on union recall. We retain Challenge in the canonical protocol because the residual $+0.016$ is in the predicted direction and because Challenge may carry value on DVs not measured here, but we no longer claim Challenge is the source of the recall lift. Practically, a Position $\to$ Convergence variant at 5 LLM calls (vs.\ 7 with Challenge) recovers $\sim 89\%$ of the lift at $\sim 40\%$ lower compute---a finding the framework could not have surfaced without the ablation.
+
+\paragraph{Two findings, one redacted mechanism.} The honest summary is two-tiered: (i)~at the framework-result level, the pre-registered confirmatory Phase~2 hypothesis ($H_1$ on adversarial tasks) holds at corrected significance on two model families; (ii)~at the mechanism level, the pre-registered protocol's named mechanism (cross-Challenge) is empirically null on the primary DV, and the recall benefit is delivered by asymmetric-Position-aggregates-entering-Convergence. We report both rather than reframing the negative ablation finding as success or hiding it behind the positive Phase~2 result.
 
 \paragraph{A structural limit, not a capability limit.}
 The development of this paper was itself conducted using the same frontier model (Claude Opus~4.6) that served as the experimental subject. The intra-session failures documented in \S\ref{sec:implications}---categorization errors surviving four-agent cross-validation, experimental design flaws undetected until after execution, brief contradictions anchored without question---all occurred at the highest available capability level. This suggests that the context accumulation problem is not resolved by scaling model intelligence. A more capable model within the same context window will reinforce its accumulated framing more eloquently, not challenge it more effectively. The implication for AI-assisted workflows is that \textbf{architectural diversity (different contexts) may matter more than capability scaling (smarter models)}---the same insight that motivates Ploidy's protocol design. A subsequent observation strengthens this claim: the fifth instance documented in \S\ref{sec:implications} occurred on Claude Opus~4.7 with an expanded 1M-token context window, during product-maintenance work on the Ploidy implementation itself---a workflow class distinct from the experimental-design failures that characterised the first four instances. The same mechanism (accumulated framing overriding literal parsing of new input) recurred twice within a single exchange, confirming that the failure is not bounded by the 4.6-era capability or context-window limits and is not specific to the experimental-design workflow in which it was first catalogued.
