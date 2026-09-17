@@ -46,10 +46,10 @@ Ploidy 논문의 핵심 가설 검증을 위한 long-context 태스크 10개+ �
 class Task:
     id: str
     name: str
-    context: str        # 2,000-5,000 토큰, anchoring prior 내장
-    prompt: str         # 평가/리뷰 질문
+    context: str  # 2,000-5,000 토큰, anchoring prior 내장
+    prompt: str  # 평가/리뷰 질문
     ground_truth: list[str]  # 5-6개
-    domain: str         # architecture, security, infra, etc.
+    domain: str  # architecture, security, infra, etc.
 ```
 
 ## 실행 방법
